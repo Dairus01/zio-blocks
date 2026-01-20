@@ -591,13 +591,12 @@ private class SchemaCompanionVersionSpecificImpl(using Quotes) {
           case '[et] =>
             val schema   = findImplicitOrDeriveSchema[et](eTpe)
             val classTag = summonClassTag[et]
-            val tpeName  = toExpr(typeName[Array[et]](tpe))
             '{
               implicit val ct: ClassTag[et] = $classTag
               new Schema(
                 reflect = new Reflect.Sequence(
                   element = $schema.reflect,
-                  typeName = $tpeName.copy(params = List($schema.reflect.typeName)),
+                  typeId = zio.blocks.typeid.TypeId.derived[Array[et]],
                   seqBinding = new Binding.Seq(
                     constructor = new SeqConstructor.ArrayConstructor {
                       def newObjectBuilder[B](sizeHint: Int): Builder[B] =
@@ -640,13 +639,12 @@ private class SchemaCompanionVersionSpecificImpl(using Quotes) {
           case '[et] =>
             val schema   = findImplicitOrDeriveSchema[et](eTpe)
             val classTag = summonClassTag[et]
-            val tpeName  = toExpr(typeName[IArray[et]](tpe))
             '{
               implicit val ct: ClassTag[et] = $classTag
               new Schema(
                 reflect = new Reflect.Sequence(
                   element = $schema.reflect,
-                  typeName = $tpeName.copy(params = List($schema.reflect.typeName)),
+                  typeId = zio.blocks.typeid.TypeId.derived[IArray[et]],
                   seqBinding = new Binding.Seq(
                     constructor = new SeqConstructor.IArrayConstructor {
                       def newObjectBuilder[B](sizeHint: Int): Builder[B] =
@@ -689,13 +687,12 @@ private class SchemaCompanionVersionSpecificImpl(using Quotes) {
           case '[et] =>
             val schema   = findImplicitOrDeriveSchema[et](eTpe)
             val classTag = summonClassTag[et]
-            val tpeName  = toExpr(typeName[ArraySeq[et]](tpe))
             '{
               implicit val ct: ClassTag[et] = $classTag
               new Schema(
                 reflect = new Reflect.Sequence(
                   element = $schema.reflect,
-                  typeName = $tpeName.copy(params = List($schema.reflect.typeName)),
+                  typeId = zio.blocks.typeid.TypeId.derived[ArraySeq[et]],
                   seqBinding = new Binding.Seq(
                     constructor = new SeqConstructor.ArraySeqConstructor {
                       def newObjectBuilder[B](sizeHint: Int): Builder[B] =
@@ -789,12 +786,11 @@ private class SchemaCompanionVersionSpecificImpl(using Quotes) {
             if (isGenericTuple(tTpe)) new GenericTupleInfo[tt](tTpe)
             else new ClassInfo[tt](tTpe)
           val fields  = typeInfo.fields[tt](Array.empty[String])
-          val tpeName = toExpr(typeName[tt](tTpe))
           '{
             new Schema(
               reflect = new Reflect.Record[Binding, tt](
                 fields = Vector($fields*),
-                typeName = $tpeName,
+                typeId = zio.blocks.typeid.TypeId.derived[tt],
                 recordBinding = new Binding.Record(
                   constructor = new Constructor[tt] {
                     def usedRegisters: RegisterOffset = ${ typeInfo.usedRegisters }
@@ -858,13 +854,12 @@ private class SchemaCompanionVersionSpecificImpl(using Quotes) {
           val typeInfo =
             if (isGenericTuple(tTpe)) new GenericTupleInfo[tt](tTpe)
             else new ClassInfo[tt](tTpe)
-          val fields  = typeInfo.fields[T](nameOverrides)
-          val tpeName = toExpr(typeName[T](tpe))
+          val fields = typeInfo.fields[T](nameOverrides)
           '{
             new Schema(
               reflect = new Reflect.Record[Binding, T](
                 fields = Vector($fields*),
-                typeName = $tpeName,
+                typeId = zio.blocks.typeid.TypeId.derived[T],
                 recordBinding = new Binding.Record(
                   constructor = new Constructor {
                     def usedRegisters: RegisterOffset = ${ typeInfo.usedRegisters }
@@ -895,17 +890,15 @@ private class SchemaCompanionVersionSpecificImpl(using Quotes) {
       val sTpe = opaqueDealias(tpe)
       sTpe.asType match {
         case '[s] =>
-          val schema  = findImplicitOrDeriveSchema[s](sTpe)
-          val tpeName = toExpr(typeName[T](tpe).asInstanceOf[TypeName[s]])
-          '{ new Schema($schema.reflect.typeName($tpeName)).asInstanceOf[Schema[T]] }
+          val schema = findImplicitOrDeriveSchema[s](sTpe)
+          '{ $schema.asInstanceOf[Schema[T]] }
       }
     } else if (isZioPreludeNewtype(tpe)) {
       val sTpe = zioPreludeNewtypeDealias(tpe)
       sTpe.asType match {
         case '[s] =>
-          val schema  = findImplicitOrDeriveSchema[s](sTpe)
-          val tpeName = toExpr(typeName[T](tpe).asInstanceOf[TypeName[s]])
-          '{ new Schema($schema.reflect.typeName($tpeName)).asInstanceOf[Schema[T]] }
+          val schema = findImplicitOrDeriveSchema[s](sTpe)
+          '{ $schema.asInstanceOf[Schema[T]] }
       }
     } else if (isTypeRef(tpe)) {
       val sTpe = typeRefDealias(tpe)
@@ -914,12 +907,11 @@ private class SchemaCompanionVersionSpecificImpl(using Quotes) {
   }.asInstanceOf[Expr[Schema[T]]]
 
   private def deriveSchemaForEnumOrModuleValue[T: Type](tpe: TypeRepr)(using Quotes): Expr[Schema[T]] = {
-    val tpeName = toExpr(typeName(tpe))
     '{
       new Schema(
         reflect = new Reflect.Record[Binding, T](
           fields = Vector.empty,
-          typeName = $tpeName,
+          typeId = zio.blocks.typeid.TypeId.derived[T],
           recordBinding = new Binding.Record(
             constructor = new ConstantConstructor(${
               Ref(
@@ -939,12 +931,11 @@ private class SchemaCompanionVersionSpecificImpl(using Quotes) {
   private def deriveSchemaForNonAbstractScalaClass[T: Type](tpe: TypeRepr)(using Quotes): Expr[Schema[T]] = {
     val classInfo = new ClassInfo(tpe)
     val fields    = classInfo.fields(Array.empty[String])
-    val tpeName   = toExpr(typeName(tpe))
     '{
       new Schema(
         reflect = new Reflect.Record[Binding, T](
           fields = Vector($fields*),
-          typeName = $tpeName,
+          typeId = zio.blocks.typeid.TypeId.derived[T],
           recordBinding = new Binding.Record(
             constructor = new Constructor {
               def usedRegisters: RegisterOffset = ${ classInfo.usedRegisters }
@@ -1015,12 +1006,11 @@ private class SchemaCompanionVersionSpecificImpl(using Quotes) {
           }.asInstanceOf[Expr[Matcher[? <: T]]]
       }
     })
-    val tpeName = toExpr(typeName(tpe))
     '{
       new Schema(
         reflect = new Reflect.Variant[Binding, T](
           cases = Vector($cases*),
-          typeName = $tpeName,
+          typeId = zio.blocks.typeid.TypeId.derived[T],
           variantBinding = new Binding.Variant(
             discriminator = new Discriminator {
               def discriminate(a: T): Int = ${

@@ -1081,7 +1081,7 @@ object Reflect {
       (wrapped.fromDynamicValue(value, trace) match {
         case Right(unwrapped) =>
           binding.wrap(unwrapped) match {
-            case Left(error) => new Left(SchemaError.expectationMismatch(trace, s"Expected ${typeId.ref.name}: $error"))
+            case Left(error) => new Left(SchemaError.expectationMismatch(trace, s"Expected ${typeId.name}: $error"))
             case right       => right
           }
         case left => left
@@ -1125,7 +1125,8 @@ object Reflect {
     }
   }
 
-  case class Deferred[F[_, _], A](_value: () => Reflect[F, A]) extends Reflect[F, A] { self =>
+  case class Deferred[F[_, _], A](_value: () => Reflect[F, A], _typeId: Option[zio.blocks.typeid.TypeId[A]] = None)
+      extends Reflect[F, A] { self =>
     protected def inner: Any = value.inner
 
     final lazy val value: Reflect[F, A] = _value()
@@ -1176,10 +1177,19 @@ object Reflect {
         }
       }
 
-    def typeId: zio.blocks.typeid.TypeId[A] = value.typeId
+    def typeId: zio.blocks.typeid.TypeId[A] = _typeId.getOrElse {
+      val v = visited.get
+      if (v.containsKey(this)) {
+        // Cycle detected - create a placeholder TypeId to break recursion
+        zio.blocks.typeid.TypeId.nominal[A]("<deferred-cycle>", zio.blocks.typeid.Owner.Root)
+      } else {
+        v.put(this, ())
+        try value.typeId
+        finally v.remove(this)
+      }
+    }
 
-    def typeId(value: zio.blocks.typeid.TypeId[A]): Deferred[F, A] = copy(_value = () => _value().typeId(value))
-
+    def typeId(newTypeId: zio.blocks.typeid.TypeId[A]): Deferred[F, A] = copy(_typeId = Some(newTypeId))
 
     override def hashCode: Int = {
       val v = visited.get
@@ -1365,7 +1375,6 @@ object Reflect {
       }
     }
 
-
     private[this] val visited =
       new ThreadLocal[java.util.IdentityHashMap[AnyRef, Unit]] {
         override def initialValue: java.util.IdentityHashMap[AnyRef, Unit] = new java.util.IdentityHashMap
@@ -1484,7 +1493,11 @@ object Reflect {
   def dynamic[F[_, _]](implicit F: FromBinding[F]): Dynamic[F] = new Dynamic(F.fromBinding(Binding.Dynamic()))
 
   private[this] def some[F[_, _], A <: AnyRef](element: Reflect[F, A])(implicit F: FromBinding[F]): Record[F, Some[A]] =
-    new Record(Vector(new Term("value", element)), zio.blocks.typeid.TypeId.derived[Some[A]], F.fromBinding(Binding.Record.some))
+    new Record(
+      Vector(new Term("value", element)),
+      zio.blocks.typeid.TypeId.derived[Some[A]],
+      F.fromBinding(Binding.Record.some)
+    )
 
   private[this] def someDouble[F[_, _]](
     element: Reflect[F, Double]

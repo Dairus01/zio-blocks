@@ -1964,10 +1964,8 @@ class JsonBinaryCodecDeriver private[json] (
       .asInstanceOf[Binding.Variant[A]]
       .discriminator
 
-  private[this] def isTuple[F[_, _], A](reflect: Reflect[F, A]): Boolean = reflect.isRecord && {
-    val typeId = reflect.typeId
-    typeId.owner == Owner.fromPackagePath("scala") && typeId.name.startsWith("Tuple")
-  }
+  private[this] def isTuple[F[_, _], A](reflect: Reflect[F, A]): Boolean =
+    reflect.isRecord && reflect.typeId.isTuple
 }
 
 private class FieldInfo(

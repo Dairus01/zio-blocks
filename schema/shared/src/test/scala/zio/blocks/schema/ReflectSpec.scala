@@ -269,7 +269,7 @@ object ReflectSpec extends SchemaBaseSpec {
       },
       test("gets and updates record type name") {
         assert(tuple4Reflect.typeId)(
-          equalTo(TypeId.derived[(Byte, Short, Int, Long)])
+          equalTo(TypeId.of[(Byte, Short, Int, Long)])
         ) &&
         assert(
           tuple4Reflect
@@ -366,7 +366,7 @@ object ReflectSpec extends SchemaBaseSpec {
       },
       test("gets and updates variant type name") {
         assert(eitherReflect.typeId)(
-          equalTo(TypeId.derived[Either[Int, Long]])
+          equalTo(TypeId.of[Either[Int, Long]])
         ) &&
         assert(
           eitherReflect
@@ -438,7 +438,7 @@ object ReflectSpec extends SchemaBaseSpec {
       test("has consistent equals and hashCode") {
         val sequence1 = Reflect.Sequence[Binding, Double, List](
           element = Reflect.double,
-          typeId = TypeId.derived[List[Double]],
+          typeId = TypeId.of[List[Double]],
           seqBinding = null // should be ignored in equals and hashCode
         )
         val sequence2 = sequence1.copy(element =
@@ -485,7 +485,7 @@ object ReflectSpec extends SchemaBaseSpec {
       test("gets and updates sequence type name") {
         val sequence1 = Reflect.vector(Reflect.int[Binding])
         assert(sequence1.typeId)(
-          equalTo(TypeId.derived[Vector[Int]])
+          equalTo(TypeId.of[Vector[Int]])
         ) &&
         assert(
           sequence1
@@ -513,7 +513,7 @@ object ReflectSpec extends SchemaBaseSpec {
       test("gets and updates sequence examples") {
         val sequence1 = Reflect.Sequence[Binding, Double, List](
           element = Reflect.double,
-          typeId = TypeId.derived[List[Double]],
+          typeId = TypeId.of[List[Double]],
           seqBinding = Binding.Seq[List, Double](
             constructor = SeqConstructor.listConstructor,
             deconstructor = SeqDeconstructor.listDeconstructor,
@@ -539,7 +539,7 @@ object ReflectSpec extends SchemaBaseSpec {
         val map1 = Reflect.Map[Binding, Short, Float, Map](
           key = Reflect.short,
           value = Reflect.float,
-          typeId = TypeId.derived[Map[Short, Float]],
+          typeId = TypeId.of[Map[Short, Float]],
           mapBinding = null // should be ignored in equals and hashCode
         )
         val map2 = map1.copy(key =
@@ -580,7 +580,7 @@ object ReflectSpec extends SchemaBaseSpec {
       test("gets and updates map type name") {
         val map1 = Reflect.map(Reflect.int[Binding], Reflect.long[Binding])
         assert(map1.typeId)(
-          equalTo(TypeId.derived[Map[Int, Long]])
+          equalTo(TypeId.of[Map[Int, Long]])
         ) &&
         assert(
           map1
@@ -604,7 +604,7 @@ object ReflectSpec extends SchemaBaseSpec {
         val map1 = Reflect.Map[Binding, Int, Long, Map](
           key = Reflect.int,
           value = Reflect.long,
-          typeId = TypeId.derived[Map[Int, Long]],
+          typeId = TypeId.of[Map[Int, Long]],
           mapBinding = null, // should be ignored in equals and hashCode
           doc = Doc("Map of Int to Long")
         )
@@ -617,7 +617,7 @@ object ReflectSpec extends SchemaBaseSpec {
         val map1 = Reflect.Map[Binding, Int, Long, Map](
           key = Reflect.int,
           value = Reflect.long,
-          typeId = TypeId.derived[Map[Int, Long]],
+          typeId = TypeId.of[Map[Int, Long]],
           mapBinding = Binding.Map[Map, Int, Long](
             constructor = MapConstructor.map,
             deconstructor = MapDeconstructor.map,
@@ -668,7 +668,7 @@ object ReflectSpec extends SchemaBaseSpec {
       },
       test("gets and updates dynamic type name") {
         val dynamic1 = Reflect.dynamic[Binding]
-        assert(dynamic1.typeId)(equalTo(TypeId.derived[DynamicValue])) &&
+        assert(dynamic1.typeId)(equalTo(TypeId.of[DynamicValue])) &&
         assert(
           dynamic1
             .typeId(

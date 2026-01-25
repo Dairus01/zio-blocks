@@ -162,7 +162,7 @@ object SchemaSpec extends SchemaBaseSpec {
                   Schema[Int].reflect.asTerm("_3"),
                   Schema[Long].reflect.asTerm("_4")
                 ),
-                typeId = zio.blocks.typeid.TypeId.derived[(Byte, Short, Int, Long)],
+                typeId = zio.blocks.typeid.TypeId.of[(Byte, Short, Int, Long)],
                 recordBinding = null
               )
             )
@@ -215,7 +215,7 @@ object SchemaSpec extends SchemaBaseSpec {
                     ),
                   Schema[Float].reflect.asTerm("f-2").copy(modifiers = Seq(Modifier.transient()))
                 ),
-                typeId = zio.blocks.typeid.TypeId.derived[Record1],
+                typeId = zio.blocks.typeid.TypeId.of[Record1],
                 recordBinding = null,
                 modifiers = Seq(
                   Modifier.config("record-key", "record-value-1"),
@@ -261,7 +261,7 @@ object SchemaSpec extends SchemaBaseSpec {
                   Schema[Byte].reflect.asTerm("b"),
                   Schema[Int].reflect.asTerm("i")
                 ),
-                typeId = zio.blocks.typeid.TypeId.derived[`Record-2`[Byte, Int]],
+                typeId = TypeId.of[`Record-2`[Byte, Int]],
                 recordBinding = null
               )
             )
@@ -297,7 +297,7 @@ object SchemaSpec extends SchemaBaseSpec {
                   Schema[Short].reflect.asTerm("s"),
                   Schema[Long].reflect.asTerm("l")
                 ),
-                typeId = zio.blocks.typeid.TypeId.derived[Record3],
+                typeId = zio.blocks.typeid.TypeId.of[Record3],
                 recordBinding = null
               )
             )
@@ -343,7 +343,7 @@ object SchemaSpec extends SchemaBaseSpec {
                   Schema.derived[Vector[ArraySeq[Int]]].reflect.asTerm("mx"),
                   Schema[List[Set[Int]]].reflect.asTerm("rs")
                 ),
-                typeId = zio.blocks.typeid.TypeId.derived[Record4],
+                typeId = zio.blocks.typeid.TypeId.of[Record4],
                 recordBinding = null
               )
             )
@@ -404,7 +404,7 @@ object SchemaSpec extends SchemaBaseSpec {
                   Schema[Unit].reflect.asTerm("u"),
                   Schema[Seq[Unit]].reflect.asTerm("su")
                 ),
-                typeId = zio.blocks.typeid.TypeId.derived[Record5],
+                typeId = zio.blocks.typeid.TypeId.of[Record5],
                 recordBinding = null
               )
             )
@@ -540,7 +540,7 @@ object SchemaSpec extends SchemaBaseSpec {
                   Schema[Option[DynamicValue]].reflect.asTerm("od"),
                   Schema[IndexedSeq[DynamicValue]].reflect.asTerm("isd")
                 ),
-                typeId = zio.blocks.typeid.TypeId.derived[Record7],
+                typeId = zio.blocks.typeid.TypeId.of[Record7],
                 recordBinding = null
               )
             )
@@ -557,7 +557,7 @@ object SchemaSpec extends SchemaBaseSpec {
         assert(record.map(_.deconstructor.usedRegisters))(isSome(equalTo(RegisterOffset(objects = 2)))) &&
         assert(record.map(_.typeId))(
           isSome(
-            equalTo(zio.blocks.typeid.TypeId.derived[Record8[Option]])
+            equalTo(zio.blocks.typeid.TypeId.of[Record8[Option]])
           )
         ) &&
         assert(schema.fromDynamicValue(schema.toDynamicValue(value)))(isRight(equalTo(value)))
@@ -663,7 +663,7 @@ object SchemaSpec extends SchemaBaseSpec {
           new Schema(
             new Reflect.Wrapper[Binding, Chunk[V], List[V]](
               Schema.list[V].reflect,
-              zio.blocks.typeid.TypeId.derived[Chunk[V]],
+              zio.blocks.typeid.TypeId.of[Chunk[V]],
               None,
               new Binding.Wrapper(x => new Right(Chunk.fromIterable(x)), _.toList)
             )
@@ -911,7 +911,7 @@ object SchemaSpec extends SchemaBaseSpec {
         ) &&
         assert(variant.map(_.cases.map(_.name)))(isSome(equalTo(Vector("Case-1", "Case-2", "Case-3")))) &&
         assert(variant.map(_.typeId))(
-          isSome(equalTo(zio.blocks.typeid.TypeId.derived[`Variant-1`]))
+          isSome(equalTo(zio.blocks.typeid.TypeId.of[`Variant-1`]))
         ) &&
         assert(variant.map(_.modifiers))(
           isSome(
@@ -960,7 +960,7 @@ object SchemaSpec extends SchemaBaseSpec {
         ) &&
         assert(variant.map(_.cases.map(_.name)))(isSome(equalTo(Vector("MissingValue", "NullValue", "Value")))) &&
         assert(variant.map(_.typeId))(
-          isSome(equalTo(zio.blocks.typeid.TypeId.derived[`Variant-2`[String]]))
+          isSome(equalTo(zio.blocks.typeid.TypeId.of[`Variant-2`[String]]))
         )
       },
       test("derives schema for options") {
@@ -1006,7 +1006,7 @@ object SchemaSpec extends SchemaBaseSpec {
         assert(schema1.fromDynamicValue(schema1.toDynamicValue(B.A2)))(isRight(equalTo(B.A2))) &&
         assert(variant1.map(_.cases.map(_.name)))(isSome(equalTo(Vector("A1", "A2")))) &&
         assert(variant1.map(_.typeId))(
-          isSome(equalTo(zio.blocks.typeid.TypeId.derived[A]))
+          isSome(equalTo(zio.blocks.typeid.TypeId.of[A]))
         ) &&
         assert(Level1_MultiLevel.c.getOption(Case))(isSome(equalTo(Case))) &&
         assert(Level1_MultiLevel.l1_c.getOption(Level1.Case))(isSome(equalTo(Level1.Case))) &&
@@ -1014,7 +1014,7 @@ object SchemaSpec extends SchemaBaseSpec {
         assert(schema2.fromDynamicValue(schema2.toDynamicValue(Level1.Case)))(isRight(equalTo(Level1.Case))) &&
         assert(variant2.map(_.cases.map(_.name)))(isSome(equalTo(Vector("Level1.Case", "Case")))) &&
         assert(variant2.map(_.typeId))(
-          isSome(equalTo(zio.blocks.typeid.TypeId.derived[Level1.MultiLevel]))
+          isSome(equalTo(zio.blocks.typeid.TypeId.of[Level1.MultiLevel]))
         )
       },
       test("derives schema for higher-kinded variant using a macro call") {
@@ -1045,7 +1045,7 @@ object SchemaSpec extends SchemaBaseSpec {
         ) &&
         assert(variant.map(_.cases.map(_.name)))(isSome(equalTo(Vector("Case-1", "Case-2")))) &&
         assert(variant.map(_.typeId))(
-          isSome(equalTo(zio.blocks.typeid.TypeId.derived[`Variant-3`[Option]]))
+          isSome(equalTo(zio.blocks.typeid.TypeId.of[`Variant-3`[Option]]))
         )
       },
       test("derives schema for genetic variant with 'Nothing' type parameter using a macro call") {
@@ -1063,7 +1063,7 @@ object SchemaSpec extends SchemaBaseSpec {
         val variant = schema.reflect.asVariant
         assert(variant.map(_.cases.map(_.name)))(isSome(equalTo(Vector("Error", "Fatal", "Success", "Timeout")))) &&
         assert(variant.map(_.typeId))(
-          isSome(equalTo(zio.blocks.typeid.TypeId.derived[Variant4[String, Int]]))
+          isSome(equalTo(zio.blocks.typeid.TypeId.of[Variant4[String, Int]]))
         ) &&
         assert(schema.fromDynamicValue(schema.toDynamicValue(Error[String]("error"))))(
           isRight(equalTo(Error[String]("error")))
@@ -1335,7 +1335,7 @@ object SchemaSpec extends SchemaBaseSpec {
         val map1 = Reflect.Map[Binding, Int, Long, Map](
           key = Reflect.int,
           value = Reflect.long,
-          typeId = zio.blocks.typeid.TypeId.derived[Map[Int, Long]],
+          typeId = zio.blocks.typeid.TypeId.of[Map[Int, Long]],
           mapBinding = Binding.Map[Map, Int, Long](
             constructor = MapConstructor.map,
             deconstructor = MapDeconstructor.map,
@@ -1904,18 +1904,18 @@ object SchemaSpec extends SchemaBaseSpec {
       if (value >= 0) new PosInt(value)
       else throw new IllegalArgumentException("Expected positive value")
 
-    // Note: AnyVal classes are NOT true opaque types - they get boxed in generic contexts.
-    // Use withTypeName instead of asOpaqueType for AnyVal wrappers.
+    val typeId: TypeId[PosInt]          = TypeId.of
     implicit val schema: Schema[PosInt] =
-      Schema[Int].transformOrFail[PosInt](PosInt.apply, _.value).withTypeName[PosInt]
+      Schema[Int].transformOrFail[PosInt](PosInt.apply, _.value).withTypeId[PosInt](typeId)
     val wrapped: Optional[PosInt, Int] = $(_.wrapped[Int])
   }
 
   case class Email(value: String)
 
   object Email extends CompanionOptics[Email] {
+    val typeId: TypeId[Email]          = TypeId.of
     implicit val schema: Schema[Email] =
-      Schema[String].transform[Email](x => new Email(x), _.value).withTypeName[Email]
+      Schema[String].transform[Email](x => new Email(x), _.value).withTypeId[Email](typeId)
     val wrapped: Optional[Email, String] = $(_.wrapped[String])
   }
 

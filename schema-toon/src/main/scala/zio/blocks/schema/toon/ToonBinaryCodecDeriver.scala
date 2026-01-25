@@ -194,7 +194,7 @@ class ToonBinaryCodecDeriver private[toon] (
     doc: Doc,
     modifiers: Seq[Modifier.Reflect]
   )(implicit F: HasBinding[F], D: HasInstance[F]): Lazy[ToonBinaryCodec[DynamicValue]] =
-    Lazy(deriveCodec(new Reflect.Dynamic(binding, TypeId.derived[DynamicValue], doc, modifiers)))
+    Lazy(deriveCodec(new Reflect.Dynamic(binding, TypeId.of[DynamicValue], doc, modifiers)))
 
   def deriveWrapper[F[_, _], A, B](
     wrapped: Reflect[F, B],

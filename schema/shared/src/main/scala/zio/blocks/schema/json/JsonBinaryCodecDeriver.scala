@@ -346,7 +346,7 @@ class JsonBinaryCodecDeriver private[json] (
     doc: Doc,
     modifiers: Seq[Modifier.Reflect]
   )(implicit F: HasBinding[F], D: HasInstance[F]): Lazy[JsonBinaryCodec[DynamicValue]] =
-    Lazy(deriveCodec(new Reflect.Dynamic(binding, zio.blocks.typeid.TypeId.derived[DynamicValue], doc, modifiers)))
+    Lazy(deriveCodec(new Reflect.Dynamic(binding, zio.blocks.typeid.TypeId.of[DynamicValue], doc, modifiers)))
 
   def deriveWrapper[F[_, _], A, B](
     wrapped: Reflect[F, B],

@@ -31,7 +31,7 @@ final class MigrationBuilder[A, B](
   sourceSchema: Schema[A],
   targetSchema: Schema[B],
   actions: Vector[MigrationAction]
-) extends MigrationBuilderMacros[A, B] {
+) extends MigrationBuilderMacros[A, B] with MigrationValidation[A, B] {
 
   /**
    * Add a new field with a default value.
@@ -128,13 +128,19 @@ final class MigrationBuilder[A, B](
     new MigrationBuilder(sourceSchema, targetSchema, actions :+ MigrationAction.TransformValues(fieldPath, transform))
 
   /**
-   * Build the final migration.
+   * Build the final migration without validation.
+   * 
+   * This is the default build method that creates a migration without
+   * compile-time validation. Use `buildValidated` for validation warnings.
    */
   def build: Migration[A, B] =
     Migration(DynamicMigration(actions), sourceSchema, targetSchema)
 
   /**
-   * Build a partial migration.
+   * Build a partial migration without validation.
+   * 
+   * Alias for `build` - both skip compile-time validation.
+   * Use `buildValidated` for compile-time checks.
    */
   def buildPartial: Migration[A, B] =
     build

@@ -19,8 +19,8 @@ final case class DynamicMigration(actions: Vector[MigrationAction]) {
 
   private def applyAction(value: DynamicValue, action: MigrationAction): Either[MigrationError, DynamicValue] = {
     action match {
-      case MigrationAction.AddField(at, default) =>
-        addField(value, at, default)
+      case MigrationAction.AddField(at, _) =>
+        addField(value, at)
       case MigrationAction.DropField(at, _) =>
         dropField(value, at)
       case MigrationAction.RenameField(at, from, to) =>
@@ -34,7 +34,7 @@ final case class DynamicMigration(actions: Vector[MigrationAction]) {
     }
   }
 
-  private def addField(value: DynamicValue, at: DynamicOptic, default: SchemaExpr[?, ?]): Either[MigrationError, DynamicValue] = {
+  private def addField(value: DynamicValue, at: DynamicOptic): Either[MigrationError, DynamicValue] = {
     value match {
       case DynamicValue.Record(fields) =>
         val fieldName = at.nodes.lastOption.collect {
@@ -45,14 +45,7 @@ final case class DynamicMigration(actions: Vector[MigrationAction]) {
         if (fieldMap.contains(fieldName)) {
           Left(MigrationError.InvalidOperation(at, "AddField", s"field '$fieldName' already exists"))
         } else {
-          default.evalDynamic(value) match {
-            case Right(values) if values.nonEmpty =>
-              Right(DynamicValue.Record(fields :+ (fieldName -> values.head)))
-            case Right(_) =>
-              Left(MigrationError.TransformationFailed(at, "default expression returned no value"))
-            case Left(opticError) =>
-              Left(MigrationError.TransformationFailed(at, s"default evaluation failed: ${opticError.message}"))
-          }
+          Right(DynamicValue.Record(fields :+ (fieldName -> DynamicValue.Primitive(zio.blocks.schema.PrimitiveValue.Unit))))
         }
       case _ =>
         Left(MigrationError.TypeMismatch(at, "Record", value.valueType.toString))

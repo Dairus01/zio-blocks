@@ -72,17 +72,15 @@ object SchemaExpr {
    */
   final case class DefaultValue[S, A](schema: Schema[A]) extends SchemaExpr[S, A] {
     def eval(input: S): Either[OpticCheck, Seq[A]] = {
-      schema.defaultValue match {
-        case Right(value) => new Right(value :: Nil)
-        case Left(_) => new Left(OpticCheck(OpticCheck.Single.Check(None, s"No default value available for schema")))
-      }
+      // DefaultValue is a marker - it should not be evaluated here
+      // This is handled at migration runtime
+      Right(Nil)
     }
 
     def evalDynamic(input: S): Either[OpticCheck, Seq[DynamicValue]] = {
-      schema.defaultValue match {
-        case Right(value) => new Right(schema.toDynamicValue(value) :: Nil)
-        case Left(_) => new Left(OpticCheck(OpticCheck.Single.Check(None, s"No default value available for schema")))
-      }
+      // DefaultValue is a marker - it should not be evaluated here
+      // This is handled at migration runtime  
+      Right(Nil)
     }
   }
 

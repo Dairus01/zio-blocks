@@ -2,7 +2,7 @@ package zio.blocks.schema.migration
 
 import scala.language.experimental.macros
 import scala.reflect.macros.blackbox
-import zio.blocks.schema.{Schema, ToStructural}
+import zio.blocks.schema.Schema
 
 /**
  * Scala 2 extensions for creating structural schemas.

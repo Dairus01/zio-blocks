@@ -1,7 +1,7 @@
 package zio.blocks.schema.migration
 
 import scala.language.experimental.macros
-import zio.blocks.schema.{DynamicOptic, Schema, SchemaExpr}
+import zio.blocks.schema.SchemaExpr
 
 /**
  * Scala 2 specific extensions for MigrationBuilder with macro-based selectors.

@@ -5,7 +5,7 @@ import scala.collection.immutable.ArraySeq
 import scala.collection.mutable
 import scala.quoted.*
 import zio.blocks.chunk.Chunk
-import zio.blocks.schema.{CommonMacroOps, DynamicValue, SchemaError}
+import zio.blocks.schema.{CommonMacroOps, DynamicValue, Platform, SchemaError}
 
 trait BindingCompanionVersionSpecific {
 
@@ -17,15 +17,18 @@ trait BindingCompanionVersionSpecific {
    *   - Case classes (derives [[Binding.Record]])
    *   - Sealed traits/enums (derives [[Binding.Variant]])
    *   - Option, Either, and their subtypes
-   *   - Standard collections (List, Vector, Set, Map, etc.)
    *   - [[DynamicValue]]
+   *   - Structural types (JVM only)
+   *
+   * For sequence types (List, Vector, etc.) and map types, use the overloads
+   * that take type constructors: `Binding.of[List]`, `Binding.of[Map]`.
    *
    * @tparam A
    *   the type to derive a binding for
    * @return
-   *   the derived binding with precise type
+   *   the derived binding
    */
-  transparent inline def of[A]: Any = ${ BindingCompanionVersionSpecificImpl.of[A] }
+  transparent inline def of[A]: Binding[_, A] = ${ BindingCompanionVersionSpecificImpl.of[A] }
 
   /**
    * Creates a [[Binding.Seq]] for a sequence type constructor. Uses given
@@ -52,7 +55,7 @@ trait BindingCompanionVersionSpecific {
 private object BindingCompanionVersionSpecificImpl {
   import scala.quoted.*
 
-  def of[A: Type](using Quotes): Expr[Any] = new BindingCompanionVersionSpecificImpl().of[A]
+  def of[A: Type](using Quotes): Expr[Binding[_, A]] = new BindingCompanionVersionSpecificImpl().of[A]
 }
 
 private class BindingCompanionVersionSpecificImpl(using Quotes) {
@@ -228,14 +231,20 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
     )
   }
 
-  def of[A: Type]: Expr[Any] = {
+  def of[A: Type]: Expr[Binding[_, A]] = {
     var tpe = TypeRepr.of[A].dealias
     // Handle AndType (e.g., Record8[Option] & Object) by extracting the left (application) type
+    // BUT preserve true intersection types of structural types (e.g., HasName & HasAge)
     tpe = tpe match {
-      case AndType(left, _) => left
-      case _                => tpe
+      case AndType(left, right) if right =:= anyTpe || right =:= TypeRepr.of[Object] =>
+        // This is an artifact like "Record8[Option] & Object", extract the left type
+        left
+      case AndType(_, _) =>
+        // Keep intersection types as-is (could be structural types like HasName & HasAge)
+        tpe
+      case _ => tpe
     }
-    deriveBinding[A](tpe)
+    deriveBinding[A](tpe).asExprOf[Binding[_, A]]
   }
 
   private def deriveBinding[A: Type](tpe: TypeRepr)(using Quotes): Expr[Any] =
@@ -264,8 +273,8 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
     else if (tpe <:< TypeRepr.of[java.time.Period]) '{ Binding.Primitive.period }
     else if (tpe <:< TypeRepr.of[java.time.Year]) '{ Binding.Primitive.year }
     else if (tpe <:< TypeRepr.of[java.time.YearMonth]) '{ Binding.Primitive.yearMonth }
-    else if (tpe <:< TypeRepr.of[java.time.ZoneId]) '{ Binding.Primitive.zoneId }
     else if (tpe <:< TypeRepr.of[java.time.ZoneOffset]) '{ Binding.Primitive.zoneOffset }
+    else if (tpe <:< TypeRepr.of[java.time.ZoneId]) '{ Binding.Primitive.zoneId }
     else if (tpe <:< TypeRepr.of[java.time.ZonedDateTime]) '{ Binding.Primitive.zonedDateTime }
     else if (tpe <:< TypeRepr.of[java.util.Currency]) '{ Binding.Primitive.currency }
     else if (tpe <:< TypeRepr.of[java.util.UUID]) '{ Binding.Primitive.uuid }
@@ -276,29 +285,33 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
     else if (tpe <:< TypeRepr.of[Left[?, ?]]) deriveLeftBinding(tpe)
     else if (tpe <:< TypeRepr.of[Right[?, ?]]) deriveRightBinding(tpe)
     else if (tpe <:< TypeRepr.of[Either[?, ?]]) deriveEitherBinding(tpe)
-    else if (tpe <:< TypeRepr.of[Map[?, ?]]) deriveMapBinding(tpe)
+    else if (tpe <:< TypeRepr.of[Map[?, ?]])
+      fail(s"Use Binding.of[Map] for map types, not Binding.of[${tpe.show}]")
     else if (tpe <:< TypeRepr.of[Chunk[?]])
-      deriveSeqBinding(tpe, '{ SeqConstructor.chunkConstructor }, '{ SeqDeconstructor.chunkDeconstructor })
+      fail(s"Use Binding.of[Chunk] for Chunk types, not Binding.of[${tpe.show}]")
     else if (tpe <:< TypeRepr.of[ArraySeq[?]])
-      deriveSeqBinding(tpe, '{ SeqConstructor.arraySeqConstructor }, '{ SeqDeconstructor.arraySeqDeconstructor })
+      fail(s"Use Binding.of[ArraySeq] for ArraySeq types, not Binding.of[${tpe.show}]")
     else if (tpe <:< TypeRepr.of[List[?]])
-      deriveSeqBinding(tpe, '{ SeqConstructor.listConstructor }, '{ SeqDeconstructor.listDeconstructor })
+      fail(s"Use Binding.of[List] for List types, not Binding.of[${tpe.show}]")
     else if (tpe <:< TypeRepr.of[Vector[?]])
-      deriveSeqBinding(tpe, '{ SeqConstructor.vectorConstructor }, '{ SeqDeconstructor.vectorDeconstructor })
+      fail(s"Use Binding.of[Vector] for Vector types, not Binding.of[${tpe.show}]")
     else if (tpe <:< TypeRepr.of[Set[?]])
-      deriveSeqBinding(tpe, '{ SeqConstructor.setConstructor }, '{ SeqDeconstructor.setDeconstructor })
+      fail(s"Use Binding.of[Set] for Set types, not Binding.of[${tpe.show}]")
     else if (tpe <:< TypeRepr.of[IndexedSeq[?]])
-      deriveSeqBinding(tpe, '{ SeqConstructor.indexedSeqConstructor }, '{ SeqDeconstructor.indexedSeqDeconstructor })
+      fail(s"Use Binding.of[IndexedSeq] for IndexedSeq types, not Binding.of[${tpe.show}]")
     else if (tpe <:< TypeRepr.of[collection.immutable.Seq[?]])
-      deriveSeqBinding(tpe, '{ SeqConstructor.seqConstructor }, '{ SeqDeconstructor.seqDeconstructor })
-    else if (tpe <:< arrayOfWildcardTpe) deriveArrayBinding(tpe)
-    else if (isIArray(tpe)) deriveIArrayBinding(tpe)
+      fail(s"Use Binding.of[Seq] for Seq types, not Binding.of[${tpe.show}]")
+    else if (tpe <:< arrayOfWildcardTpe)
+      fail(s"Use Binding.of[Array] for Array types, not Binding.of[${tpe.show}]")
+    else if (isIArray(tpe))
+      fail(s"Use Binding.of[IArray] for IArray types, not Binding.of[${tpe.show}]")
     else if (isIterator(tpe))
       fail(s"Cannot derive Binding for Iterator types: ${tpe.show}. Iterators are not round-trip serializable.")
     else if (isGenericTuple(tpe)) deriveGenericTupleBinding[A](tpe)
     else if (isNamedTuple(tpe)) deriveNamedTupleBinding[A](tpe)
     else if (isEnumOrModuleValue(tpe)) deriveEnumOrModuleValueBinding[A]
     else if (isSealedTraitOrAbstractClass(tpe)) deriveSealedTraitBinding[A](tpe)
+    else if (isUnionOfStructuralTypes(tpe)) deriveStructuralVariantBindingSimple[A](tpe)
     else if (isUnion(tpe)) deriveUnionBinding[A](tpe)
     else if (isNonAbstractScalaClass(tpe)) {
       findSmartConstructor(tpe) match {
@@ -310,7 +323,8 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
     else if (isTypeRef(tpe)) {
       val sTpe = typeRefDealias(tpe)
       sTpe.asType match { case '[s] => deriveBinding[s](sTpe) }
-    } else fail(s"Cannot derive Binding for type: ${tpe.show}")
+    } else if (isStructuralType(tpe)) deriveStructuralRecordBindingSimple[A](tpe)
+    else fail(s"Cannot derive Binding for type: ${tpe.show}")
 
   private def deriveSomeBinding(tpe: TypeRepr)(using Quotes): Expr[Any] = {
     val elemTpe       = typeArgs(tpe).head
@@ -379,582 +393,6 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
     val args = typeArgs(tpe)
     (args(0).asType, args(1).asType) match {
       case ('[a], '[b]) => '{ Binding.Variant.either[a, b] }
-    }
-  }
-
-  private def deriveMapBinding(tpe: TypeRepr)(using Quotes): Expr[Any] = {
-    val args = typeArgs(tpe)
-    (args(0).asType, args(1).asType) match {
-      case ('[k], '[v]) =>
-        '{ new Binding.Map[Map, k, v](MapConstructor.map, MapDeconstructor.map) }
-    }
-  }
-
-  private def deriveSeqBinding[F[_]](
-    tpe: TypeRepr,
-    constructor: Expr[SeqConstructor[F]],
-    deconstructor: Expr[SeqDeconstructor[F]]
-  )(using Quotes, Type[F]): Expr[Any] =
-    typeArgs(tpe).headOption match {
-      case Some(elemTpe) =>
-        elemTpe.asType match {
-          case '[a] => '{ new Binding.Seq[F, a]($constructor, $deconstructor) }
-        }
-      case None =>
-        '{ new Binding.Seq[F, Nothing]($constructor, $deconstructor) }
-    }
-
-  private def deriveArrayBinding(tpe: TypeRepr)(using Quotes): Expr[Any] = {
-    val elemTpe       = typeArgs(tpe).head
-    val dealiasedElem = dealiasOnDemand(elemTpe)
-    elemTpe.asType match {
-      case '[a] =>
-        import scala.reflect.ClassTag
-        val classTag = Expr
-          .summon[ClassTag[a]]
-          .getOrElse(
-            fail(s"No ClassTag available for ${elemTpe.show}")
-          )
-        if (dealiasedElem =:= intTpe) '{
-          new Binding.Seq[Array, a](
-            new SeqConstructor.ArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Int](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Int]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): Array[B] = {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Int]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: Array[B] = Array.empty[Int].asInstanceOf[Array[B]]
-            },
-            SeqDeconstructor.arrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= longTpe) '{
-          new Binding.Seq[Array, a](
-            new SeqConstructor.ArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Long](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Long]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): Array[B] = {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Long]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: Array[B] = Array.empty[Long].asInstanceOf[Array[B]]
-            },
-            SeqDeconstructor.arrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= doubleTpe) '{
-          new Binding.Seq[Array, a](
-            new SeqConstructor.ArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Double](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Double]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): Array[B] = {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Double]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: Array[B] = Array.empty[Double].asInstanceOf[Array[B]]
-            },
-            SeqDeconstructor.arrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= floatTpe) '{
-          new Binding.Seq[Array, a](
-            new SeqConstructor.ArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Float](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Float]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): Array[B] = {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Float]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: Array[B] = Array.empty[Float].asInstanceOf[Array[B]]
-            },
-            SeqDeconstructor.arrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= booleanTpe) '{
-          new Binding.Seq[Array, a](
-            new SeqConstructor.ArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Boolean](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Boolean]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): Array[B] = {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Boolean]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: Array[B] = Array.empty[Boolean].asInstanceOf[Array[B]]
-            },
-            SeqDeconstructor.arrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= byteTpe) '{
-          new Binding.Seq[Array, a](
-            new SeqConstructor.ArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Byte](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Byte]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): Array[B] = {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Byte]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: Array[B] = Array.empty[Byte].asInstanceOf[Array[B]]
-            },
-            SeqDeconstructor.arrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= shortTpe) '{
-          new Binding.Seq[Array, a](
-            new SeqConstructor.ArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Short](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Short]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): Array[B] = {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Short]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: Array[B] = Array.empty[Short].asInstanceOf[Array[B]]
-            },
-            SeqDeconstructor.arrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= charTpe) '{
-          new Binding.Seq[Array, a](
-            new SeqConstructor.ArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Char](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Char]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): Array[B] = {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Char]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: Array[B] = Array.empty[Char].asInstanceOf[Array[B]]
-            },
-            SeqDeconstructor.arrayDeconstructor
-          )
-        }
-        else
-          '{
-            val ct = $classTag
-            new Binding.Seq[Array, a](
-              new SeqConstructor.ArrayConstructor {
-                def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                  new Builder(ct.newArray(Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-                def addObject[B](builder: Builder[B], a: B): Unit = {
-                  var buf = builder.buffer
-                  val idx = builder.size
-                  if (buf.length == idx) {
-                    buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[AnyRef]], idx << 1).asInstanceOf[Array[B]]
-                    builder.buffer = buf
-                  }
-                  buf(idx) = a
-                  builder.size = idx + 1
-                }
-
-                def resultObject[B](builder: Builder[B]): Array[B] = {
-                  val buf  = builder.buffer
-                  val size = builder.size
-                  if (buf.length == size) buf
-                  else java.util.Arrays.copyOf(buf.asInstanceOf[Array[AnyRef]], size).asInstanceOf[Array[B]]
-                }
-
-                def emptyObject[B]: Array[B] = ct.newArray(0).asInstanceOf[Array[B]]
-              },
-              SeqDeconstructor.arrayDeconstructor
-            )
-          }
-    }
-  }
-
-  private def deriveIArrayBinding(tpe: TypeRepr)(using Quotes): Expr[Any] = {
-    val elemTpe       = typeArgs(tpe).head
-    val dealiasedElem = dealiasOnDemand(elemTpe)
-    elemTpe.asType match {
-      case '[a] =>
-        import scala.reflect.ClassTag
-        val classTag = Expr
-          .summon[ClassTag[a]]
-          .getOrElse(
-            fail(s"No ClassTag available for ${elemTpe.show}")
-          )
-        if (dealiasedElem =:= intTpe) '{
-          new Binding.Seq[IArray, a](
-            new SeqConstructor.IArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Int](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Int]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): IArray[B] = IArray.unsafeFromArray {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Int]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: IArray[B] = IArray.unsafeFromArray(Array.empty[Int].asInstanceOf[Array[B]])
-            },
-            SeqDeconstructor.iArrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= longTpe) '{
-          new Binding.Seq[IArray, a](
-            new SeqConstructor.IArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Long](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Long]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): IArray[B] = IArray.unsafeFromArray {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Long]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: IArray[B] = IArray.unsafeFromArray(Array.empty[Long].asInstanceOf[Array[B]])
-            },
-            SeqDeconstructor.iArrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= doubleTpe) '{
-          new Binding.Seq[IArray, a](
-            new SeqConstructor.IArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Double](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Double]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): IArray[B] = IArray.unsafeFromArray {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Double]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: IArray[B] = IArray.unsafeFromArray(Array.empty[Double].asInstanceOf[Array[B]])
-            },
-            SeqDeconstructor.iArrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= floatTpe) '{
-          new Binding.Seq[IArray, a](
-            new SeqConstructor.IArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Float](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Float]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): IArray[B] = IArray.unsafeFromArray {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Float]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: IArray[B] = IArray.unsafeFromArray(Array.empty[Float].asInstanceOf[Array[B]])
-            },
-            SeqDeconstructor.iArrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= booleanTpe) '{
-          new Binding.Seq[IArray, a](
-            new SeqConstructor.IArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Boolean](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Boolean]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): IArray[B] = IArray.unsafeFromArray {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Boolean]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: IArray[B] = IArray.unsafeFromArray(Array.empty[Boolean].asInstanceOf[Array[B]])
-            },
-            SeqDeconstructor.iArrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= byteTpe) '{
-          new Binding.Seq[IArray, a](
-            new SeqConstructor.IArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Byte](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Byte]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): IArray[B] = IArray.unsafeFromArray {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Byte]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: IArray[B] = IArray.unsafeFromArray(Array.empty[Byte].asInstanceOf[Array[B]])
-            },
-            SeqDeconstructor.iArrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= shortTpe) '{
-          new Binding.Seq[IArray, a](
-            new SeqConstructor.IArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Short](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Short]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): IArray[B] = IArray.unsafeFromArray {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Short]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: IArray[B] = IArray.unsafeFromArray(Array.empty[Short].asInstanceOf[Array[B]])
-            },
-            SeqDeconstructor.iArrayDeconstructor
-          )
-        }
-        else if (dealiasedElem =:= charTpe) '{
-          new Binding.Seq[IArray, a](
-            new SeqConstructor.IArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(new Array[Char](Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[Char]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): IArray[B] = IArray.unsafeFromArray {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else java.util.Arrays.copyOf(buf.asInstanceOf[Array[Char]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: IArray[B] = IArray.unsafeFromArray(Array.empty[Char].asInstanceOf[Array[B]])
-            },
-            SeqDeconstructor.iArrayDeconstructor
-          )
-        }
-        else
-          '{
-            val ct = $classTag
-            new Binding.Seq[IArray, a](
-              new SeqConstructor.IArrayConstructor {
-                def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                  new Builder(ct.newArray(Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-                def addObject[B](builder: Builder[B], a: B): Unit = {
-                  var buf = builder.buffer
-                  val idx = builder.size
-                  if (buf.length == idx) {
-                    buf = java.util.Arrays.copyOf(buf.asInstanceOf[Array[AnyRef]], idx << 1).asInstanceOf[Array[B]]
-                    builder.buffer = buf
-                  }
-                  buf(idx) = a
-                  builder.size = idx + 1
-                }
-
-                def resultObject[B](builder: Builder[B]): IArray[B] = IArray.unsafeFromArray {
-                  val buf  = builder.buffer
-                  val size = builder.size
-                  if (buf.length == size) buf
-                  else java.util.Arrays.copyOf(buf.asInstanceOf[Array[AnyRef]], size).asInstanceOf[Array[B]]
-                }
-
-                def emptyObject[B]: IArray[B] = IArray.unsafeFromArray(ct.newArray(0).asInstanceOf[Array[B]])
-              },
-              SeqDeconstructor.iArrayDeconstructor
-            )
-          }
     }
   }
 
@@ -1056,7 +494,7 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
         case '[b] =>
           '{
             Binding.Wrapper[A, b](
-              wrap = (b: b) => Right(b.asInstanceOf[A]),
+              wrap = (b: b) => b.asInstanceOf[A],
               unwrap = (a: A) => a.asInstanceOf[b]
             )
           }
@@ -1107,12 +545,15 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
 
           (underlyingTpe.asType, errorType.asType) match {
             case ('[b], '[e]) =>
-              val wrapExpr: Expr[b => Either[SchemaError, A]] =
+              val wrapExpr: Expr[b => A] =
                 if (isSchemaError) {
                   '{ (underlying: b) =>
                     ${
                       Apply(Select(Ref(companion), method), List('underlying.asTerm)).asExpr
                         .asInstanceOf[Expr[Either[SchemaError, A]]]
+                    } match {
+                      case Right(a)  => a
+                      case Left(err) => throw err
                     }
                   }
                 } else {
@@ -1121,8 +562,8 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
                       Apply(Select(Ref(companion), method), List('underlying.asTerm)).asExpr
                         .asInstanceOf[Expr[Either[e, A]]]
                     } match {
-                      case Right(a)  => Right(a)
-                      case Left(err) => Left(SchemaError.validationFailed(err.toString))
+                      case Right(a)  => a
+                      case Left(err) => throw SchemaError.validationFailed(err.toString)
                     }
                   }
                 }
@@ -1144,7 +585,7 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
             case '[b] =>
               '{
                 Binding.Wrapper[A, b](
-                  wrap = (b: b) => Right(b.asInstanceOf[A]),
+                  wrap = (b: b) => b.asInstanceOf[A],
                   unwrap = (a: A) => a.asInstanceOf[b]
                 )
               }
@@ -1166,7 +607,7 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
 
     underlyingTpe.asType match {
       case '[b] =>
-        val wrapExpr: Expr[b => Either[SchemaError, A]] = wrapMethod match {
+        val wrapExpr: Expr[b => A] = wrapMethod match {
           case Some(m) =>
             val mTpe = companion.symbol.typeRef.memberType(m)
             mTpe match {
@@ -1179,6 +620,9 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
                         ${
                           Apply(Select(companion, m), List('underlying.asTerm)).asExpr
                             .asInstanceOf[Expr[Either[SchemaError, A]]]
+                        } match {
+                          case Right(a)  => a
+                          case Left(err) => throw err
                         }
                       }
                     } else {
@@ -1187,19 +631,19 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
                           Apply(Select(companion, m), List('underlying.asTerm)).asExpr
                             .asInstanceOf[Expr[Either[e, A]]]
                         } match {
-                          case Right(a)  => Right(a)
-                          case Left(err) => Left(SchemaError.validationFailed(err.toString))
+                          case Right(a)  => a
+                          case Left(err) => throw SchemaError.validationFailed(err.toString)
                         }
                       }
                     }
                 }
               case _ =>
                 '{ (underlying: b) =>
-                  Right(${ Apply(Select(companion, m), List('underlying.asTerm)).asExpr.asInstanceOf[Expr[A]] })
+                  ${ Apply(Select(companion, m), List('underlying.asTerm)).asExpr.asInstanceOf[Expr[A]] }
                 }
             }
           case None =>
-            '{ (underlying: b) => Right(underlying.asInstanceOf[A]) }
+            '{ (underlying: b) => underlying.asInstanceOf[A] }
         }
 
         val unwrapExpr: Expr[A => b] = unwrapMethod match {
@@ -1221,12 +665,15 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
 
     (info.underlyingType.asType, info.errorType.asType) match {
       case ('[b], '[e]) =>
-        val wrapExpr: Expr[b => Either[SchemaError, A]] =
+        val wrapExpr: Expr[b => A] =
           if (isSchemaError) {
             '{ (underlying: b) =>
               ${
                 Apply(Select(info.companionRef, info.applyMethod), List('underlying.asTerm)).asExpr
                   .asInstanceOf[Expr[Either[SchemaError, A]]]
+              } match {
+                case Right(a)  => a
+                case Left(err) => throw err
               }
             }
           } else {
@@ -1235,8 +682,8 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
                 Apply(Select(info.companionRef, info.applyMethod), List('underlying.asTerm)).asExpr
                   .asInstanceOf[Expr[Either[e, A]]]
               } match {
-                case Right(a)  => Right(a)
-                case Left(err) => Left(SchemaError.validationFailed(err.toString))
+                case Right(a)  => a
+                case Left(err) => throw SchemaError.validationFailed(err.toString)
               }
             }
           }
@@ -1860,5 +1307,397 @@ private class BindingCompanionVersionSpecificImpl(using Quotes) {
           )
         }
     }
+  }
+
+  // ============ Structural Type Support (JVM only) ============
+
+  private def isStructuralType(tpe: TypeRepr): Boolean = {
+    val dealiased = tpe.dealias
+    dealiased match {
+      case Refinement(_, _, _)     => true
+      case AndType(left, right)    => isStructuralType(left) || isStructuralType(right)
+      case AnnotatedType(inner, _) => isStructuralType(inner)
+      case _                       => false
+    }
+  }
+
+  private def isUnionOfStructuralTypes(tpe: TypeRepr): Boolean =
+    tpe.dealias match {
+      case OrType(left, right) =>
+        (isStructuralType(left) || isUnionOfStructuralTypes(left)) &&
+        (isStructuralType(right) || isUnionOfStructuralTypes(right))
+      case _ => false
+    }
+
+  private def getStructuralMembers(tpe: TypeRepr): List[(String, TypeRepr)] = {
+    def collectMembers(t: TypeRepr): List[(String, TypeRepr)] = {
+      val dealiased = t.dealias
+      dealiased match {
+        case Refinement(parent, name, info) =>
+          val memberType = info match {
+            case MethodType(Nil, Nil, returnType)            => returnType
+            case MethodType(_, params, _) if params.nonEmpty =>
+              fail(s"Structural type member '$name' has parameters, which is not supported.")
+            case ByNameType(underlying) => underlying
+            case other                  => other
+          }
+          (name, memberType) :: collectMembers(parent)
+        case AndType(left, right) =>
+          collectMembers(left) ++ collectMembers(right)
+        case AnnotatedType(inner, _) =>
+          collectMembers(inner)
+        case _ => Nil
+      }
+    }
+
+    val members = collectMembers(tpe)
+    val grouped = members.groupBy(_._1)
+    grouped.foreach { case (name, occurrences) =>
+      if (occurrences.size > 1) {
+        val types = occurrences.map(_._2.show).distinct
+        if (types.size > 1) {
+          fail(s"Conflicting types for member '$name' in structural type: ${types.mkString(", ")}")
+        }
+      }
+    }
+    members.distinctBy(_._1).sortBy(_._1)
+  }
+
+  private def getAllUnionTypesForStructural(tpe: TypeRepr): List[TypeRepr] =
+    tpe.dealias match {
+      case OrType(left, right) =>
+        getAllUnionTypesForStructural(left) ++ getAllUnionTypesForStructural(right)
+      case other => List(other)
+    }
+
+  private def structuralRegisterKind(tpe: TypeRepr): String =
+    tpe.dealias match {
+      case t if t =:= booleanTpe => "boolean"
+      case t if t =:= byteTpe    => "byte"
+      case t if t =:= shortTpe   => "short"
+      case t if t =:= intTpe     => "int"
+      case t if t =:= longTpe    => "long"
+      case t if t =:= floatTpe   => "float"
+      case t if t =:= doubleTpe  => "double"
+      case t if t =:= charTpe    => "char"
+      case _                     => "object"
+    }
+
+  private def structuralRegisterOffset(kind: String): Expr[RegisterOffset.RegisterOffset] =
+    kind match {
+      case "boolean" => '{ RegisterOffset(booleans = 1) }
+      case "byte"    => '{ RegisterOffset(bytes = 1) }
+      case "short"   => '{ RegisterOffset(shorts = 1) }
+      case "int"     => '{ RegisterOffset(ints = 1) }
+      case "long"    => '{ RegisterOffset(longs = 1) }
+      case "float"   => '{ RegisterOffset(floats = 1) }
+      case "double"  => '{ RegisterOffset(doubles = 1) }
+      case "char"    => '{ RegisterOffset(chars = 1) }
+      case "object"  => '{ RegisterOffset(objects = 1) }
+    }
+
+  private case class StructuralFieldForGen(name: String, memberTpe: TypeRepr, kind: String, index: Int)
+
+  private def deriveStructuralRecordBindingSimple[A: Type](tpe: TypeRepr): Expr[Any] = {
+    if (!Platform.supportsReflection) {
+      fail(
+        s"""Cannot derive Binding for structural type '${tpe.show}' on ${Platform.name}.
+           |
+           |Structural types require JVM runtime reflection.
+           |Use case classes for cross-platform compatibility.""".stripMargin
+      )
+    }
+
+    val members = getStructuralMembers(tpe)
+    if (members.isEmpty) {
+      fail(s"Structural type ${tpe.show} has no members. Cannot derive Binding.")
+    }
+
+    val fields = members.zipWithIndex.map { case ((name, memberTpe), idx) =>
+      StructuralFieldForGen(name, memberTpe, structuralRegisterKind(memberTpe), idx)
+    }
+
+    val totalUsedRegistersExpr: Expr[RegisterOffset.RegisterOffset] = {
+      var acc: Expr[RegisterOffset.RegisterOffset] = '{ 0L }
+      fields.foreach { f =>
+        acc = '{ RegisterOffset.add($acc, ${ structuralRegisterOffset(f.kind) }) }
+      }
+      acc
+    }
+
+    val constructorExpr: Expr[Constructor[A]] =
+      generateStructuralConstructorWithRealMethods[A](fields, totalUsedRegistersExpr)
+
+    val deconstructorExpr: Expr[Deconstructor[A]] = generateStructuralDeconstructor[A](fields, totalUsedRegistersExpr)
+
+    '{ new Binding.Record[A]($constructorExpr, $deconstructorExpr) }
+  }
+
+  private def generateStructuralConstructorWithRealMethods[A: Type](
+    fields: Seq[StructuralFieldForGen],
+    totalUsedRegistersExpr: Expr[RegisterOffset.RegisterOffset]
+  ): Expr[Constructor[A]] = {
+    val fieldKindsExpr = Expr(fields.map(_.kind).toArray)
+
+    // Generate anonymous class factory using Symbol.newClass (Scala 3.5+ only)
+    val instanceCreatorExpr: Expr[Array[Any] => A] = generateAnonymousClassFactory[A](fields)
+
+    '{
+      new Constructor[A] {
+        private val _fieldKinds      = $fieldKindsExpr
+        private val _instanceCreator = $instanceCreatorExpr
+
+        def usedRegisters: RegisterOffset.RegisterOffset = $totalUsedRegistersExpr
+
+        def construct(in: Registers, baseOffset: RegisterOffset.RegisterOffset): A = {
+          val values = new scala.Array[Any](_fieldKinds.length)
+          var idx    = 0
+          var offset = baseOffset
+          val len    = _fieldKinds.length
+          while (idx < len) {
+            val value: Any = _fieldKinds(idx) match {
+              case "boolean" =>
+                val v = in.getBoolean(offset)
+                offset = RegisterOffset.add(offset, RegisterOffset(booleans = 1))
+                v
+              case "byte" =>
+                val v = in.getByte(offset)
+                offset = RegisterOffset.add(offset, RegisterOffset(bytes = 1))
+                v
+              case "short" =>
+                val v = in.getShort(offset)
+                offset = RegisterOffset.add(offset, RegisterOffset(shorts = 1))
+                v
+              case "int" =>
+                val v = in.getInt(offset)
+                offset = RegisterOffset.add(offset, RegisterOffset(ints = 1))
+                v
+              case "long" =>
+                val v = in.getLong(offset)
+                offset = RegisterOffset.add(offset, RegisterOffset(longs = 1))
+                v
+              case "float" =>
+                val v = in.getFloat(offset)
+                offset = RegisterOffset.add(offset, RegisterOffset(floats = 1))
+                v
+              case "double" =>
+                val v = in.getDouble(offset)
+                offset = RegisterOffset.add(offset, RegisterOffset(doubles = 1))
+                v
+              case "char" =>
+                val v = in.getChar(offset)
+                offset = RegisterOffset.add(offset, RegisterOffset(chars = 1))
+                v
+              case _ =>
+                val v = in.getObject(offset)
+                offset = RegisterOffset.add(offset, RegisterOffset(objects = 1))
+                v
+            }
+            values(idx) = value
+            idx += 1
+          }
+          _instanceCreator(values)
+        }
+      }
+    }
+  }
+
+  /**
+   * Generates a factory function that creates anonymous class instances for
+   * structural types. Delegates to StructuralBindingMacros which is only
+   * available in Scala 3.5+ (via scala-3.5+/ directory).
+   */
+  private def generateAnonymousClassFactory[A: Type](fields: Seq[StructuralFieldForGen]): Expr[Array[Any] => A] = {
+    val fieldInfos = fields.map(f => StructuralBindingMacros.StructuralFieldInfo(f.name, f.memberTpe, f.kind, f.index))
+    StructuralBindingMacros.generateAnonymousClassFactory[A](fieldInfos, fail)
+  }
+
+  private def generateStructuralDeconstructor[A: Type](
+    fields: Seq[StructuralFieldForGen],
+    totalUsedRegistersExpr: Expr[RegisterOffset.RegisterOffset]
+  ): Expr[Deconstructor[A]] =
+    '{
+      new Deconstructor[A] {
+        def usedRegisters: RegisterOffset.RegisterOffset = $totalUsedRegistersExpr
+
+        def deconstruct(out: Registers, baseOffset: RegisterOffset.RegisterOffset, in: A): Unit = {
+          var offset = baseOffset
+          ${
+            val deconstructorStatements = fields.map { f =>
+              val fieldNameExpr = Expr(f.name)
+              f.kind match {
+                case "boolean" =>
+                  '{
+                    val method = in.getClass.getMethod($fieldNameExpr)
+                    val v      = method.invoke(in).asInstanceOf[java.lang.Boolean].booleanValue
+                    out.setBoolean(offset, v)
+                    offset = RegisterOffset.add(offset, RegisterOffset(booleans = 1))
+                  }
+                case "byte" =>
+                  '{
+                    val method = in.getClass.getMethod($fieldNameExpr)
+                    val v      = method.invoke(in).asInstanceOf[java.lang.Byte].byteValue
+                    out.setByte(offset, v)
+                    offset = RegisterOffset.add(offset, RegisterOffset(bytes = 1))
+                  }
+                case "short" =>
+                  '{
+                    val method = in.getClass.getMethod($fieldNameExpr)
+                    val v      = method.invoke(in).asInstanceOf[java.lang.Short].shortValue
+                    out.setShort(offset, v)
+                    offset = RegisterOffset.add(offset, RegisterOffset(shorts = 1))
+                  }
+                case "int" =>
+                  '{
+                    val method = in.getClass.getMethod($fieldNameExpr)
+                    val v      = method.invoke(in).asInstanceOf[java.lang.Integer].intValue
+                    out.setInt(offset, v)
+                    offset = RegisterOffset.add(offset, RegisterOffset(ints = 1))
+                  }
+                case "long" =>
+                  '{
+                    val method = in.getClass.getMethod($fieldNameExpr)
+                    out.setLong(offset, method.invoke(in).asInstanceOf[java.lang.Long].longValue)
+                    offset = RegisterOffset.add(offset, RegisterOffset(longs = 1))
+                  }
+                case "float" =>
+                  '{
+                    val method = in.getClass.getMethod($fieldNameExpr)
+                    out.setFloat(offset, method.invoke(in).asInstanceOf[java.lang.Float].floatValue)
+                    offset = RegisterOffset.add(offset, RegisterOffset(floats = 1))
+                  }
+                case "double" =>
+                  '{
+                    val method = in.getClass.getMethod($fieldNameExpr)
+                    out.setDouble(offset, method.invoke(in).asInstanceOf[java.lang.Double].doubleValue)
+                    offset = RegisterOffset.add(offset, RegisterOffset(doubles = 1))
+                  }
+                case "char" =>
+                  '{
+                    val method = in.getClass.getMethod($fieldNameExpr)
+                    out.setChar(offset, method.invoke(in).asInstanceOf[java.lang.Character].charValue)
+                    offset = RegisterOffset.add(offset, RegisterOffset(chars = 1))
+                  }
+                case _ =>
+                  '{
+                    val method = in.getClass.getMethod($fieldNameExpr)
+                    out.setObject(offset, method.invoke(in))
+                    offset = RegisterOffset.add(offset, RegisterOffset(objects = 1))
+                  }
+              }
+            }
+            Expr.block(deconstructorStatements.init.toList, deconstructorStatements.last)
+          }
+        }
+      }
+    }
+
+  private def deriveStructuralVariantBindingSimple[A: Type](tpe: TypeRepr): Expr[Any] = {
+    if (!Platform.supportsReflection) {
+      fail(
+        s"""Cannot derive Binding for union of structural types '${tpe.show}' on ${Platform.name}.
+           |
+           |Structural types require JVM runtime reflection.
+           |Use sealed traits for cross-platform compatibility.""".stripMargin
+      )
+    }
+
+    val unionTypes = getAllUnionTypesForStructural(tpe)
+    if (unionTypes.size < 2) {
+      fail(s"Union type ${tpe.show} needs at least 2 alternatives.")
+    }
+
+    case class VariantCase(tpe: TypeRepr, members: List[(String, TypeRepr)], discriminatorNames: Array[String])
+
+    val cases = unionTypes.map { t =>
+      val members = getStructuralMembers(t)
+      if (members.isEmpty) {
+        fail(s"Union alternative ${t.show} has no members.")
+      }
+      VariantCase(t, members, members.map(_._1).toArray)
+    }
+
+    val otherCasesMembers = cases.map(_.members.map(_._1).toSet)
+    cases.zipWithIndex.foreach { case (c, i) =>
+      val myMembers     = c.members.map(_._1).toSet
+      val otherMembers  = otherCasesMembers.zipWithIndex.filter(_._2 != i).flatMap(_._1).toSet
+      val uniqueMembers = myMembers.diff(otherMembers)
+      if (uniqueMembers.isEmpty && cases.size > 1) {
+        val otherCasesStr = otherCasesMembers.zipWithIndex
+          .filter(_._2 != i)
+          .map { case (members, idx) => s"Case $idx: {${members.mkString(", ")}}" }
+          .mkString("; ")
+        fail(
+          s"""Cannot discriminate union alternative ${c.tpe.show}.
+             |Each union alternative must have at least one unique member name.
+             |Members: {${myMembers.mkString(", ")}}
+             |Other cases: $otherCasesStr""".stripMargin
+        )
+      }
+    }
+
+    // Helper to check if object has all named methods - inlined into generated code
+    def hasAllMethodsExpr(objExpr: Expr[AnyRef], names: Array[String]): Expr[Boolean] = {
+      // Use Varargs to construct a proper Seq expression, then convert to Array
+      val nameExprs: Seq[Expr[String]]    = names.toSeq.map(n => Expr(n))
+      val namesSeqExpr: Expr[Seq[String]] = Varargs(nameExprs)
+      '{
+        val obj   = $objExpr
+        val names = $namesSeqExpr.toArray
+        if (obj == null) false
+        else {
+          val cls = obj.getClass
+          var i   = 0
+          var ok  = true
+          while (ok && i < names.length) {
+            try { cls.getMethod(names(i)) }
+            catch { case _: NoSuchMethodException => ok = false }
+            i += 1
+          }
+          ok
+        }
+      }
+    }
+
+    val discriminatorExpr = '{
+      new Discriminator[A] {
+        def discriminate(a: A): Int = ${
+          val casesWithIndex = cases.zipWithIndex.map { case (c, idx) =>
+            (c.discriminatorNames, Expr(idx))
+          }
+          casesWithIndex.foldRight('{ -1 }: Expr[Int]) { case ((names, idxExpr), elseExpr) =>
+            val checkExpr = hasAllMethodsExpr('{ a.asInstanceOf[AnyRef] }, names)
+            '{ if ($checkExpr) $idxExpr else $elseExpr }
+          }
+        }
+      }
+    }
+
+    val matcherExprs: List[Expr[Matcher[?]]] = cases.map { c =>
+      c.tpe.asType match {
+        case '[t] =>
+          val names = c.discriminatorNames
+          '{
+            new Matcher[t] {
+              def downcastOrNull(any: Any): t =
+                if (any == null) null.asInstanceOf[t]
+                else if (${ hasAllMethodsExpr('{ any.asInstanceOf[AnyRef] }, names) })
+                  any.asInstanceOf[t]
+                else null.asInstanceOf[t]
+            }
+          }
+      }
+    }
+
+    val matchersExpr = matcherExprs match {
+      case Nil             => fail("No matchers generated")
+      case m :: Nil        => '{ Matchers($m.asInstanceOf[Matcher[? <: A]]) }
+      case m1 :: m2 :: Nil => '{ Matchers($m1.asInstanceOf[Matcher[? <: A]], $m2.asInstanceOf[Matcher[? <: A]]) }
+      case all             =>
+        val varargs = Varargs(all.map(m => '{ $m.asInstanceOf[Matcher[? <: A]] }))
+        '{ Matchers($varargs*) }
+    }
+
+    '{ new Binding.Variant[A]($discriminatorExpr, $matchersExpr) }
   }
 }

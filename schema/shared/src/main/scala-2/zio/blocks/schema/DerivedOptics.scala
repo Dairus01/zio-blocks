@@ -173,25 +173,20 @@ object DerivedOptics {
 
         override def construct(registers: Registers, offset: RegisterOffset): A = {
           val b = reader(registers, offset).asInstanceOf[B]
-          wrapper.binding.wrap(b) match {
-            case Right(a)  => a
-            case Left(err) => throw new RuntimeException(s"Wrapper validation failed: ${err.message}")
-          }
+          wrapper.binding.wrap(b)
         }
       },
       deconstructor = new Deconstructor[A] {
         override def usedRegisters: RegisterOffset = usedRegs
 
-        override def deconstruct(registers: Registers, offset: RegisterOffset, value: A): Unit = {
-          val b = wrapper.binding.unwrap(value)
-          writer(registers, offset, b)
-        }
+        override def deconstruct(registers: Registers, offset: RegisterOffset, value: A): Unit =
+          writer(registers, offset, wrapper.binding.unwrap(value))
       }
     )
 
     Reflect.Record(
       fields = IndexedSeq(fieldTerm.asInstanceOf[Term[Binding, A, ?]]),
-      typeName = wrapper.typeName,
+      typeId = wrapper.typeId,
       recordBinding = syntheticBinding
     )
   }

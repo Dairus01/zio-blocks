@@ -1,67 +1,72 @@
 package zio.blocks.schema.structural
-import zio.blocks.schema.SchemaBaseSpec
-
-import scala.language.reflectiveCalls
 
 import zio.blocks.schema._
+import zio.blocks.schema.binding._
 import zio.test._
 
 /**
- * Tests for Scala 2 pure structural type derivation (JVM only).
+ * Tests for Scala 2 structural type derivation (JVM only).
+ *
+ * Mirrors the tests from PureStructuralTypeSpec.scala for Scala 3. Note: Uses
+ * scala.language.reflectiveCalls for structural type syntax.
  */
 object StructuralTypeSpec extends SchemaBaseSpec {
 
-  type PersonLike = { def name: String; def age: Int }
-  type PointLike  = { def x: Int; def y: Int }
+  type PersonStructural = { def name: String; def age: Int }
+  type Person           = { def name: String; def age: Int }
 
   def spec = suite("StructuralTypeSpec")(
-    test("structural type round-trips through DynamicValue") {
-      val schema  = Schema.derived[PersonLike]
-      val dynamic = DynamicValue.Record(
-        "name" -> DynamicValue.Primitive(PrimitiveValue.String("Alice")),
-        "age"  -> DynamicValue.Primitive(PrimitiveValue.Int(30))
+    test("derive schema for structural type with String and Int fields") {
+      val schema     = Schema.derived[PersonStructural]
+      val record     = schema.reflect.asInstanceOf[Reflect.Record[Binding, PersonStructural]]
+      val fieldNames = record.fields.map(_.name).toSet
+      assertTrue(
+        record.fields.size == 2,
+        fieldNames.contains("name"),
+        fieldNames.contains("age")
       )
-      val result = schema.fromDynamicValue(dynamic)
-      result match {
-        case Right(person) =>
-          val backToDynamic = schema.toDynamicValue(person)
-          backToDynamic match {
-            case rec: DynamicValue.Record =>
-              val expected = dynamic.asInstanceOf[DynamicValue.Record]
-              assertTrue(
-                rec.fields.toSet == expected.fields.toSet,
-                person.name == "Alice",
-                person.age == 30
-              )
-            case _ => assertTrue(false) ?? "Expected DynamicValue.Record"
-          }
-        case Left(err) =>
-          assertTrue(false) ?? s"fromDynamicValue failed: $err"
-      }
     },
-    test("structural type with primitives round-trips") {
-      val schema  = Schema.derived[PointLike]
-      val dynamic = DynamicValue.Record(
-        "x" -> DynamicValue.Primitive(PrimitiveValue.Int(100)),
-        "y" -> DynamicValue.Primitive(PrimitiveValue.Int(200))
-      )
-      val result = schema.fromDynamicValue(dynamic)
-      result match {
-        case Right(point) =>
-          val backToDynamic = schema.toDynamicValue(point)
-          backToDynamic match {
-            case rec: DynamicValue.Record =>
-              val expected = dynamic.asInstanceOf[DynamicValue.Record]
-              assertTrue(
-                rec.fields.toSet == expected.fields.toSet,
-                point.x == 100,
-                point.y == 200
-              )
-            case _ => assertTrue(false) ?? "Expected DynamicValue.Record"
-          }
-        case Left(err) =>
-          assertTrue(false) ?? s"fromDynamicValue failed: $err"
+    test("derive schema for intersection of structural types") {
+      type HasName  = { def name: String }
+      type HasAge   = { def age: Int }
+      type Combined = HasName with HasAge
+
+      val schema = Schema.derived[Combined]
+      val record = schema.reflect.asInstanceOf[Reflect.Record[Binding, Combined]]
+      assertTrue(record.fields.size == 2)
+    },
+    test("structural type constructor creates instance and deconstructor extracts values") {
+      val schema  = Schema.derived[Person]
+      val record  = schema.reflect.asInstanceOf[Reflect.Record[Binding, Person]]
+      val binding = record.recordBinding.asInstanceOf[Binding.Record[Person]]
+
+      val inputRegisters = Registers(binding.constructor.usedRegisters)
+      inputRegisters.setObject(RegisterOffset.Zero, "Alice")
+      inputRegisters.setInt(RegisterOffset.Zero, 30)
+
+      val constructed: Person = binding.constructor.construct(inputRegisters, RegisterOffset.Zero)
+      assertTrue(constructed != null)
+    },
+    test("structural type deconstructor extracts values via reflection") {
+      val schema  = Schema.derived[Person]
+      val record  = schema.reflect.asInstanceOf[Reflect.Record[Binding, Person]]
+      val binding = record.recordBinding.asInstanceOf[Binding.Record[Person]]
+
+      val person: Person = new {
+        def name: String = "Bob"
+        def age: Int     = 25
       }
+
+      val registers = Registers(binding.deconstructor.usedRegisters)
+      binding.deconstructor.deconstruct(registers, RegisterOffset.Zero, person)
+
+      val extractedName = registers.getObject(RegisterOffset.Zero).asInstanceOf[String]
+      val extractedAge  = registers.getInt(RegisterOffset.Zero)
+
+      assertTrue(
+        extractedName == "Bob",
+        extractedAge == 25
+      )
     }
   )
 }

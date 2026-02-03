@@ -88,6 +88,7 @@ The following example shows a `Person` case class represented as a `Reflect.Reco
 import zio.blocks.schema._
 import zio.blocks.schema.binding.RegisterOffset._
 import zio.blocks.schema.binding._
+import zio.blocks.typeid.TypeId
 
 case class Person(
   name: String,
@@ -108,7 +109,7 @@ object Person {
           Term("height", Schema.double.reflect),
           Term("weight", Schema.double.reflect)
         ),
-        typeName = TypeName(namespace = Namespace(Seq.empty), "Person"),
+        typeId = TypeId.of[Person],
         recordBinding = Binding.Record[Person](
           constructor = new Constructor[Person] {
             override def usedRegisters: RegisterOffset =
@@ -132,8 +133,7 @@ object Person {
               out.setDouble(offset + RegisterOffset(ints = 1), in.height)
               out.setDouble(offset + RegisterOffset(ints = 1, doubles = 1), in.weight)
             }
-          },
-          examples = Seq(Person("Jane", "jane@examle.com", 32, 180, 76.0))
+          }
         )
       )
     }
@@ -311,8 +311,7 @@ Each of these patterns shares a common characteristic: they wrap an underlying t
 ```
 case class Wrapper[F[_, _], A, B](
   wrapped: Reflect[F, B],
-  typeName: TypeName[A],
-  wrapperPrimitiveType: Option[PrimitiveType[A]],
+  typeId: TypeId[A],
   wrapperBinding: F[BindingType.Wrapper[A, B], A],
   doc: Doc = Doc.Empty,
   modifiers: Seq[Modifier.Reflect] = Nil
@@ -343,8 +342,7 @@ object PosInt {
   implicit val schema: Schema[PosInt] = Schema(
     Reflect.Wrapper(
       wrapped = Schema[Int].reflect,
-      typeName = TypeName(Namespace(Nil), "PosInt"),
-      wrapperPrimitiveType = None,
+      typeId = TypeId.of[PosInt],
       wrapperBinding = Binding.Wrapper[PosInt, Int](
         wrap = v => PosInt(v), 
         unwrap = _.value
@@ -354,33 +352,20 @@ object PosInt {
 }
 ```
 
-To use auto-derivation for wrappers, you can use the `wrap` and `wrapTotal` methods on `Schema`:
+To create schemas for wrapper types, use `transform`:
 
 ```scala
 import zio.blocks.schema.Schema
 
-// Wrapper with validation using wrap (can fail)
 case class PosInt private (value: Int) extends AnyVal
 
 object PosInt {
-  def apply(value: Int): Either[String, PosInt] =
-    if (value >= 0) Right(new PosInt(value))
-    else Left("Expected positive value")
+  def unsafeApply(value: Int): PosInt =
+    if (value >= 0) new PosInt(value)
+    else throw SchemaError.validationFailed("Expected positive value")
 
   implicit val schema: Schema[PosInt] = 
-    Schema.derived.wrap(PosInt.apply, _.value)
-}
-```
-
-If the wrapping function is total (i.e., cannot fail), you can use `wrapTotal`:
-
-```scala
-// Simple wrapper using wrapTotal (no validation, always succeeds)
-case class UserId(value: Long) extends AnyVal
-
-object UserId {
-  implicit val schema: Schema[UserId] =
-    Schema.derived[UserId].wrapTotal(UserId.apply, _.value)
+    Schema[Int].transform(PosInt.unsafeApply, _.value)
 }
 ```
 
@@ -406,6 +391,7 @@ We can define its schema using `Reflect.Deferred` as follows:
 import zio.blocks.schema._
 import zio.blocks.schema.binding.RegisterOffset.RegisterOffset
 import zio.blocks.schema.binding._
+import zio.blocks.typeid.TypeId
 
 // Recursive data type
 case class Tree(value: Int, children: List[Tree])
@@ -417,7 +403,7 @@ object Tree {
         Schema[Int].reflect.asTerm("value"),
         Reflect.Deferred(() => Schema.list(new Schema(treeReflect)).reflect).asTerm("children")
       ),
-      typeName = TypeName(Namespace(Nil), "Tree"),
+      typeId = TypeId.of[Tree],
       recordBinding = Binding.Record(
         constructor = new Constructor[Tree] {
           def usedRegisters: RegisterOffset = RegisterOffset(ints = 1, objects = 1)

@@ -13,15 +13,17 @@ trait BindingCompanionVersionSpecific {
    *   - Case classes (derives [[Binding.Record]])
    *   - Sealed traits/enums (derives [[Binding.Variant]])
    *   - Option, Either, and their subtypes
-   *   - Standard collections (List, Vector, Set, Map, etc.)
    *   - [[zio.blocks.schema.DynamicValue]]
+   *
+   * For sequence types (List, Vector, etc.) and map types, use the overloads
+   * that take type constructors: `Binding.of[List]`, `Binding.of[Map]`.
    *
    * @tparam A
    *   the type to derive a binding for
    * @return
-   *   the derived binding with precise type
+   *   the derived binding
    */
-  def of[A]: Any = macro BindingCompanionVersionSpecificMacros.ofImpl[A]
+  def of[A]: Binding[_, A] = macro BindingCompanionVersionSpecificMacros.ofImpl[A]
 
   /**
    * Creates a [[Binding.Seq]] for a sequence type constructor. Uses implicit
@@ -46,7 +48,7 @@ trait BindingCompanionVersionSpecific {
 }
 
 object BindingCompanionVersionSpecificMacros {
-  def ofImpl[A: c.WeakTypeTag](c: blackbox.Context): c.Expr[Any] =
+  def ofImpl[A: c.WeakTypeTag](c: blackbox.Context): c.Expr[Binding[_, A]] =
     new BindingMacroImpl[c.type](c).of[A]
 }
 
@@ -106,6 +108,71 @@ private class BindingMacroImpl[C <: blackbox.Context](val c: C) {
     zio.blocks.schema.CommonMacroOps.directSubTypes(c)(tpe)
 
   private def isIterator(tpe: Type): Boolean = tpe <:< typeOf[Iterator[_]]
+
+  // Structural type detection for Scala 2
+  // Structural types appear as RefinedType with member declarations
+  // Also handles intersection types (`with`) which may have empty decls but structural parents
+  private def isStructuralType(tpe: Type): Boolean = {
+    val dealiased = tpe.dealias
+    dealiased match {
+      case RefinedType(parents, decls) =>
+        // Case 1: Has own member declarations
+        val hasOwnDecls = decls.exists {
+          case m: MethodSymbol => m.paramLists.flatten.isEmpty && !m.isConstructor
+          case _               => false
+        }
+        // Case 2: Intersection type with structural parents
+        val hasStructuralParent = parents.exists(p =>
+          !(p =:= typeOf[AnyRef] || p =:= typeOf[Any] || p =:= typeOf[Object]) && isStructuralType(p)
+        )
+        hasOwnDecls || hasStructuralParent
+      case _ => false
+    }
+  }
+
+  // Get structural members from a type (supports intersection via `with`)
+  private def getStructuralMembers(tpe: Type): List[(String, Type)] = {
+    def collectMembers(t: Type): List[(String, Type)] = {
+      val dealiased = t.dealias
+      dealiased match {
+        case RefinedType(parents, decls) =>
+          val memberDecls = decls.toList.collect {
+            case m: MethodSymbol if m.paramLists.flatten.isEmpty && !m.isConstructor =>
+              (m.name.decodedName.toString, m.returnType.asSeenFrom(t, t.typeSymbol))
+          }
+          val parentMembers = parents.flatMap(collectMembers)
+          memberDecls ++ parentMembers
+        case _ => Nil
+      }
+    }
+
+    val members = collectMembers(tpe)
+    val grouped = members.groupBy(_._1)
+    // Validate that members with the same name have compatible types
+    grouped.foreach {
+      case (name, occurrences) if occurrences.size > 1 =>
+        val types = occurrences.map(_._2).distinct
+        if (types.size > 1 && !types.tail.forall(_ =:= types.head)) {
+          fail(s"Conflicting types for member '$name' in structural type: ${types.map(_.toString).mkString(", ")}")
+        }
+      case _ => // single occurrence, no conflict possible
+    }
+    // Deduplicate by name, keeping first occurrence, then sort alphabetically
+    grouped.map(_._2.head).toList.sortBy(_._1)
+  }
+
+  private def structuralRegisterKind(tpe: Type): String = {
+    val dealiased = dealiasOnDemand(tpe)
+    if (dealiased =:= booleanTpe) "boolean"
+    else if (dealiased =:= byteTpe) "byte"
+    else if (dealiased =:= shortTpe) "short"
+    else if (dealiased =:= intTpe) "int"
+    else if (dealiased =:= longTpe) "long"
+    else if (dealiased =:= floatTpe) "float"
+    else if (dealiased =:= doubleTpe) "double"
+    else if (dealiased =:= charTpe) "char"
+    else "object"
+  }
 
   private def isTypeRef(tpe: Type): Boolean = tpe match {
     case TypeRef(_, sym, Nil) =>
@@ -224,9 +291,9 @@ private class BindingMacroImpl[C <: blackbox.Context](val c: C) {
     }
   }
 
-  def of[A: c.WeakTypeTag]: c.Expr[Any] = {
+  def of[A: c.WeakTypeTag]: c.Expr[Binding[_, A]] = {
     val tpe = weakTypeOf[A].dealias
-    deriveBinding(tpe)
+    deriveBinding(tpe).asInstanceOf[c.Expr[Binding[_, A]]]
   }
 
   private def deriveBinding(tpe: Type): c.Expr[Any] =
@@ -265,9 +332,9 @@ private class BindingMacroImpl[C <: blackbox.Context](val c: C) {
     else if (tpe <:< typeOf[java.time.Year]) c.Expr[Any](q"_root_.zio.blocks.schema.binding.Binding.Primitive.year")
     else if (tpe <:< typeOf[java.time.YearMonth])
       c.Expr[Any](q"_root_.zio.blocks.schema.binding.Binding.Primitive.yearMonth")
-    else if (tpe <:< typeOf[java.time.ZoneId]) c.Expr[Any](q"_root_.zio.blocks.schema.binding.Binding.Primitive.zoneId")
     else if (tpe <:< typeOf[java.time.ZoneOffset])
       c.Expr[Any](q"_root_.zio.blocks.schema.binding.Binding.Primitive.zoneOffset")
+    else if (tpe <:< typeOf[java.time.ZoneId]) c.Expr[Any](q"_root_.zio.blocks.schema.binding.Binding.Primitive.zoneId")
     else if (tpe <:< typeOf[java.time.ZonedDateTime])
       c.Expr[Any](q"_root_.zio.blocks.schema.binding.Binding.Primitive.zonedDateTime")
     else if (tpe <:< typeOf[java.util.Currency])
@@ -280,54 +347,29 @@ private class BindingMacroImpl[C <: blackbox.Context](val c: C) {
     else if (tpe.typeConstructor =:= leftTpe) deriveLeftBinding(tpe)
     else if (tpe.typeConstructor =:= rightTpe) deriveRightBinding(tpe)
     else if (tpe.typeConstructor =:= eitherTpe) deriveEitherBinding(tpe)
-    else if (tpe.typeConstructor =:= mapTpe) deriveMapBinding(tpe)
+    else if (tpe.typeConstructor =:= mapTpe)
+      fail(s"Use Binding.of[Map] for map types, not Binding.of[$tpe]")
     else if (tpe.typeConstructor =:= chunkTpe)
-      deriveSeqBinding(
-        tpe,
-        q"_root_.zio.blocks.schema.binding.SeqConstructor.chunkConstructor",
-        q"_root_.zio.blocks.schema.binding.SeqDeconstructor.chunkDeconstructor"
-      )
+      fail(s"Use Binding.of[Chunk] for Chunk types, not Binding.of[$tpe]")
     else if (tpe.typeConstructor =:= arraySeqTpe)
-      deriveSeqBinding(
-        tpe,
-        q"_root_.zio.blocks.schema.binding.SeqConstructor.arraySeqConstructor",
-        q"_root_.zio.blocks.schema.binding.SeqDeconstructor.arraySeqDeconstructor"
-      )
+      fail(s"Use Binding.of[ArraySeq] for ArraySeq types, not Binding.of[$tpe]")
     else if (tpe.typeConstructor =:= listTpe)
-      deriveSeqBinding(
-        tpe,
-        q"_root_.zio.blocks.schema.binding.SeqConstructor.listConstructor",
-        q"_root_.zio.blocks.schema.binding.SeqDeconstructor.listDeconstructor"
-      )
+      fail(s"Use Binding.of[List] for List types, not Binding.of[$tpe]")
     else if (tpe.typeConstructor =:= vectorTpe)
-      deriveSeqBinding(
-        tpe,
-        q"_root_.zio.blocks.schema.binding.SeqConstructor.vectorConstructor",
-        q"_root_.zio.blocks.schema.binding.SeqDeconstructor.vectorDeconstructor"
-      )
+      fail(s"Use Binding.of[Vector] for Vector types, not Binding.of[$tpe]")
     else if (tpe.typeConstructor =:= setTpe)
-      deriveSeqBinding(
-        tpe,
-        q"_root_.zio.blocks.schema.binding.SeqConstructor.setConstructor",
-        q"_root_.zio.blocks.schema.binding.SeqDeconstructor.setDeconstructor"
-      )
+      fail(s"Use Binding.of[Set] for Set types, not Binding.of[$tpe]")
     else if (tpe.typeConstructor =:= indexedSeqTpe)
-      deriveSeqBinding(
-        tpe,
-        q"_root_.zio.blocks.schema.binding.SeqConstructor.indexedSeqConstructor",
-        q"_root_.zio.blocks.schema.binding.SeqDeconstructor.indexedSeqDeconstructor"
-      )
+      fail(s"Use Binding.of[IndexedSeq] for IndexedSeq types, not Binding.of[$tpe]")
     else if (tpe.typeConstructor =:= seqTpe)
-      deriveSeqBinding(
-        tpe,
-        q"_root_.zio.blocks.schema.binding.SeqConstructor.seqConstructor",
-        q"_root_.zio.blocks.schema.binding.SeqDeconstructor.seqDeconstructor"
-      )
-    else if (tpe.typeConstructor =:= arrayTpe) deriveArrayBinding(tpe)
+      fail(s"Use Binding.of[Seq] for Seq types, not Binding.of[$tpe]")
+    else if (tpe.typeConstructor =:= arrayTpe)
+      fail(s"Use Binding.of[Array] for Array types, not Binding.of[$tpe]")
     else if (isIterator(tpe))
       fail(s"Cannot derive Binding for Iterator types: $tpe. Iterators are not round-trip serializable.")
     else if (isEnumOrModuleValue(tpe)) deriveEnumOrModuleValueBinding(tpe)
     else if (isSealedTraitOrAbstractClass(tpe)) deriveSealedTraitBinding(tpe)
+    else if (isStructuralType(tpe)) deriveStructuralRecordBinding(tpe)
     else if (isNonAbstractScalaClass(tpe)) {
       findSmartConstructor(tpe) match {
         case Some(info) => deriveSmartConstructorBinding(tpe, info)
@@ -399,112 +441,6 @@ private class BindingMacroImpl[C <: blackbox.Context](val c: C) {
     c.Expr[Any](q"_root_.zio.blocks.schema.binding.Binding.Variant.either[${args(0)}, ${args(1)}]")
   }
 
-  private def deriveMapBinding(tpe: Type): c.Expr[Any] = {
-    val args = typeArgs(tpe)
-    c.Expr[Any](
-      q"""new _root_.zio.blocks.schema.binding.Binding.Map[Map, ${args(0)}, ${args(1)}](
-        _root_.zio.blocks.schema.binding.MapConstructor.map,
-        _root_.zio.blocks.schema.binding.MapDeconstructor.map
-      )"""
-    )
-  }
-
-  private def deriveSeqBinding(tpe: Type, constructor: Tree, deconstructor: Tree): c.Expr[Any] = {
-    val elemTpe = typeArgs(tpe).headOption.getOrElse(typeOf[Nothing])
-    val collTpe = tpe.typeConstructor
-    c.Expr[Any](q"new _root_.zio.blocks.schema.binding.Binding.Seq[$collTpe, $elemTpe]($constructor, $deconstructor)")
-  }
-
-  private def deriveArrayBinding(tpe: Type): c.Expr[Any] = {
-    val elemTpe       = typeArgs(tpe).head
-    val dealiasedElem = dealiasOnDemand(elemTpe)
-
-    def primitiveArrayBinding(primTpe: Type, emptyExpr: Tree): c.Expr[Any] =
-      c.Expr[Any](
-        q"""
-        new _root_.zio.blocks.schema.binding.Binding.Seq[Array, $elemTpe](
-          new _root_.zio.blocks.schema.binding.SeqConstructor.ArrayConstructor {
-            def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-              new Builder(new Array[$primTpe](_root_.java.lang.Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-            def addObject[B](builder: Builder[B], a: B): Unit = {
-              var buf = builder.buffer
-              val idx = builder.size
-              if (buf.length == idx) {
-                buf = _root_.java.util.Arrays.copyOf(buf.asInstanceOf[Array[$primTpe]], idx << 1).asInstanceOf[Array[B]]
-                builder.buffer = buf
-              }
-              buf(idx) = a
-              builder.size = idx + 1
-            }
-
-            def resultObject[B](builder: Builder[B]): Array[B] = {
-              val buf  = builder.buffer
-              val size = builder.size
-              if (buf.length == size) buf
-              else _root_.java.util.Arrays.copyOf(buf.asInstanceOf[Array[$primTpe]], size).asInstanceOf[Array[B]]
-            }
-
-            def emptyObject[B]: Array[B] = $emptyExpr.asInstanceOf[Array[B]]
-          },
-          _root_.zio.blocks.schema.binding.SeqDeconstructor.arrayDeconstructor
-        )
-        """
-      )
-
-    if (dealiasedElem =:= intTpe)
-      primitiveArrayBinding(intTpe, q"Array.empty[Int]")
-    else if (dealiasedElem =:= longTpe)
-      primitiveArrayBinding(longTpe, q"Array.empty[Long]")
-    else if (dealiasedElem =:= doubleTpe)
-      primitiveArrayBinding(doubleTpe, q"Array.empty[Double]")
-    else if (dealiasedElem =:= floatTpe)
-      primitiveArrayBinding(floatTpe, q"Array.empty[Float]")
-    else if (dealiasedElem =:= booleanTpe)
-      primitiveArrayBinding(booleanTpe, q"Array.empty[Boolean]")
-    else if (dealiasedElem =:= byteTpe)
-      primitiveArrayBinding(byteTpe, q"Array.empty[Byte]")
-    else if (dealiasedElem =:= shortTpe)
-      primitiveArrayBinding(shortTpe, q"Array.empty[Short]")
-    else if (dealiasedElem =:= charTpe)
-      primitiveArrayBinding(charTpe, q"Array.empty[Char]")
-    else
-      c.Expr[Any](
-        q"""
-        {
-          val ct = implicitly[_root_.scala.reflect.ClassTag[$elemTpe]]
-          new _root_.zio.blocks.schema.binding.Binding.Seq[Array, $elemTpe](
-            new _root_.zio.blocks.schema.binding.SeqConstructor.ArrayConstructor {
-              def newObjectBuilder[B](sizeHint: Int): Builder[B] =
-                new Builder(ct.newArray(_root_.java.lang.Math.max(sizeHint, 1)).asInstanceOf[Array[B]], 0)
-
-              def addObject[B](builder: Builder[B], a: B): Unit = {
-                var buf = builder.buffer
-                val idx = builder.size
-                if (buf.length == idx) {
-                  buf = _root_.java.util.Arrays.copyOf(buf.asInstanceOf[Array[AnyRef]], idx << 1).asInstanceOf[Array[B]]
-                  builder.buffer = buf
-                }
-                buf(idx) = a
-                builder.size = idx + 1
-              }
-
-              def resultObject[B](builder: Builder[B]): Array[B] = {
-                val buf  = builder.buffer
-                val size = builder.size
-                if (buf.length == size) buf
-                else _root_.java.util.Arrays.copyOf(buf.asInstanceOf[Array[AnyRef]], size).asInstanceOf[Array[B]]
-              }
-
-              def emptyObject[B]: Array[B] = ct.newArray(0).asInstanceOf[Array[B]]
-            },
-            _root_.zio.blocks.schema.binding.SeqDeconstructor.arrayDeconstructor
-          )
-        }
-        """
-      )
-  }
-
   private def deriveEnumOrModuleValueBinding(tpe: Type): c.Expr[Any] = {
     val moduleSymbol = tpe.typeSymbol.asClass.module
     c.Expr[Any](
@@ -561,15 +497,16 @@ private class BindingMacroImpl[C <: blackbox.Context](val c: C) {
     val wrapTree =
       if (isSchemaError) {
         q"""
-        (underlying: $underlyingType) => $companion.$applyMethod(underlying)
+        (underlying: $underlyingType) => $companion.$applyMethod(underlying) match {
+          case _root_.scala.Right(a)  => a
+          case _root_.scala.Left(err) => throw err
+        }
         """
       } else {
         q"""
         (underlying: $underlyingType) => $companion.$applyMethod(underlying) match {
-          case _root_.scala.Right(a)  => _root_.scala.Right(a)
-          case _root_.scala.Left(err) => _root_.scala.Left(
-            _root_.zio.blocks.schema.SchemaError.validationFailed(err.toString)
-          )
+          case _root_.scala.Right(a)  => a
+          case _root_.scala.Left(err) => throw _root_.zio.blocks.schema.SchemaError.validationFailed(err.toString)
         }
         """
       }
@@ -596,11 +533,11 @@ private class BindingMacroImpl[C <: blackbox.Context](val c: C) {
     val wrapTree =
       if (wrapMethod != NoSymbol) {
         q"""
-        (underlying: $underlyingType) => _root_.scala.Right($companion.wrap(underlying))
+        (underlying: $underlyingType) => $companion.wrap(underlying)
         """
       } else {
         q"""
-        (underlying: $underlyingType) => _root_.scala.Right(underlying.asInstanceOf[$tpe])
+        (underlying: $underlyingType) => underlying.asInstanceOf[$tpe]
         """
       }
 
@@ -758,4 +695,155 @@ private class BindingMacroImpl[C <: blackbox.Context](val c: C) {
       )
       """
     )
+
+  private def deriveStructuralRecordBinding(tpe: Type): c.Expr[Any] = {
+    // Check at compile-time if Platform supports reflection
+    // This is checked at macro expansion time, which runs on JVM, but we need to ensure
+    // the generated code will also run on JVM only
+    if (!zio.blocks.schema.Platform.supportsReflection) {
+      fail(
+        s"""Cannot derive Binding for structural type '$tpe' on ${zio.blocks.schema.Platform.name}.
+           |
+           |Structural types require JVM runtime reflection.
+           |Use case classes for cross-platform compatibility.""".stripMargin
+      )
+    }
+
+    val members = getStructuralMembers(tpe)
+    if (members.isEmpty) {
+      fail(s"Structural type $tpe has no members. Cannot derive Binding.")
+    }
+
+    case class FieldInfo(name: String, tpe: Type, kind: String, fieldOffset: Long)
+
+    // Compute field offsets using the same formula as RegisterOffset.apply
+    def offsetDelta(registerType: String): Long = registerType match {
+      case "boolean" => 0x100000000L
+      case "byte"    => 0x100000000L
+      case "short"   => 0x200000000L
+      case "int"     => 0x400000000L
+      case "long"    => 0x800000000L
+      case "float"   => 0x400000000L
+      case "double"  => 0x800000000L
+      case "char"    => 0x200000000L
+      case "object"  => 1L
+    }
+
+    var currentOffset: Long = 0L
+    val fields              = members.map { case (name, memberTpe) =>
+      val kind        = structuralRegisterKind(memberTpe)
+      val fieldOffset = currentOffset
+      currentOffset += offsetDelta(kind)
+      FieldInfo(name, memberTpe, kind, fieldOffset)
+    }
+    val usedRegistersLong = currentOffset
+
+    // Generate anonymous class method definitions for the constructor
+    val methodDefs = fields.zipWithIndex.map { case (f, idx) =>
+      val fieldName  = TermName(f.name)
+      val fieldTpe   = f.tpe
+      val idxLiteral = Literal(Constant(idx))
+      q"def $fieldName: $fieldTpe = values($idxLiteral).asInstanceOf[$fieldTpe]"
+    }
+
+    // Generate the values array construction from registers
+    val valueReads = fields.map { f =>
+      val offsetLit = Literal(Constant(f.fieldOffset))
+      f.kind match {
+        case "boolean" => q"in.getBoolean(offset + $offsetLit).asInstanceOf[AnyRef]"
+        case "byte"    => q"in.getByte(offset + $offsetLit).asInstanceOf[AnyRef]"
+        case "short"   => q"in.getShort(offset + $offsetLit).asInstanceOf[AnyRef]"
+        case "int"     => q"in.getInt(offset + $offsetLit).asInstanceOf[AnyRef]"
+        case "long"    => q"in.getLong(offset + $offsetLit).asInstanceOf[AnyRef]"
+        case "float"   => q"in.getFloat(offset + $offsetLit).asInstanceOf[AnyRef]"
+        case "double"  => q"in.getDouble(offset + $offsetLit).asInstanceOf[AnyRef]"
+        case "char"    => q"in.getChar(offset + $offsetLit).asInstanceOf[AnyRef]"
+        case _         => q"in.getObject(offset + $offsetLit)"
+      }
+    }
+
+    // Generate deconstructor statements using reflection
+    val deconstructStatements = fields.map { f =>
+      val fieldNameStr = f.name
+      val offsetLit    = Literal(Constant(f.fieldOffset))
+      f.kind match {
+        case "boolean" =>
+          q"""
+          val method = in.getClass.getMethod($fieldNameStr)
+          out.setBoolean(offset + $offsetLit, method.invoke(in).asInstanceOf[java.lang.Boolean].booleanValue)
+          """
+        case "byte" =>
+          q"""
+          val method = in.getClass.getMethod($fieldNameStr)
+          out.setByte(offset + $offsetLit, method.invoke(in).asInstanceOf[java.lang.Byte].byteValue)
+          """
+        case "short" =>
+          q"""
+          val method = in.getClass.getMethod($fieldNameStr)
+          out.setShort(offset + $offsetLit, method.invoke(in).asInstanceOf[java.lang.Short].shortValue)
+          """
+        case "int" =>
+          q"""
+          val method = in.getClass.getMethod($fieldNameStr)
+          out.setInt(offset + $offsetLit, method.invoke(in).asInstanceOf[java.lang.Integer].intValue)
+          """
+        case "long" =>
+          q"""
+          val method = in.getClass.getMethod($fieldNameStr)
+          out.setLong(offset + $offsetLit, method.invoke(in).asInstanceOf[java.lang.Long].longValue)
+          """
+        case "float" =>
+          q"""
+          val method = in.getClass.getMethod($fieldNameStr)
+          out.setFloat(offset + $offsetLit, method.invoke(in).asInstanceOf[java.lang.Float].floatValue)
+          """
+        case "double" =>
+          q"""
+          val method = in.getClass.getMethod($fieldNameStr)
+          out.setDouble(offset + $offsetLit, method.invoke(in).asInstanceOf[java.lang.Double].doubleValue)
+          """
+        case "char" =>
+          q"""
+          val method = in.getClass.getMethod($fieldNameStr)
+          out.setChar(offset + $offsetLit, method.invoke(in).asInstanceOf[java.lang.Character].charValue)
+          """
+        case _ =>
+          q"""
+          val method = in.getClass.getMethod($fieldNameStr)
+          out.setObject(offset + $offsetLit, method.invoke(in))
+          """
+      }
+    }
+
+    val usedRegistersLit = Literal(Constant(usedRegistersLong))
+
+    c.Expr[Any](
+      q"""
+      new _root_.zio.blocks.schema.binding.Binding.Record[$tpe](
+        constructor = new _root_.zio.blocks.schema.binding.Constructor[$tpe] {
+          def usedRegisters: _root_.zio.blocks.schema.binding.RegisterOffset.RegisterOffset = $usedRegistersLit
+
+          def construct(
+            in: _root_.zio.blocks.schema.binding.Registers,
+            offset: _root_.zio.blocks.schema.binding.RegisterOffset.RegisterOffset
+          ): $tpe = {
+            val values: Array[AnyRef] = Array(..$valueReads)
+            new { ..$methodDefs }.asInstanceOf[$tpe]
+          }
+        },
+        deconstructor = new _root_.zio.blocks.schema.binding.Deconstructor[$tpe] {
+          def usedRegisters: _root_.zio.blocks.schema.binding.RegisterOffset.RegisterOffset = $usedRegistersLit
+
+          def deconstruct(
+            out: _root_.zio.blocks.schema.binding.Registers,
+            offset: _root_.zio.blocks.schema.binding.RegisterOffset.RegisterOffset,
+            in: $tpe
+          ): Unit = {
+            ..$deconstructStatements
+          }
+        }
+      )
+      """
+    )
+  }
 }

@@ -1,5 +1,6 @@
 package zio.blocks.schema.json
 
+import zio.blocks.chunk.ChunkMap
 import zio.blocks.schema._
 import zio.test._
 
@@ -124,7 +125,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
     suite("Object constraints")(
       test("properties constraint") {
         val schema = JsonSchema.obj(
-          properties = Some(Map("name" -> JsonSchema.string(), "age" -> JsonSchema.integer()))
+          properties = Some(ChunkMap("name" -> JsonSchema.string(), "age" -> JsonSchema.integer()))
         )
         assertTrue(
           schema.conforms(Json.Object("name" -> Json.String("Alice"), "age" -> Json.Number(30))),
@@ -134,7 +135,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
       },
       test("required constraint") {
         val schema = JsonSchema.obj(
-          properties = Some(Map("name" -> JsonSchema.string())),
+          properties = Some(ChunkMap("name" -> JsonSchema.string())),
           required = Some(Set("name"))
         )
         assertTrue(
@@ -144,7 +145,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
       },
       test("additionalProperties false") {
         val schema = JsonSchema.obj(
-          properties = Some(Map("name" -> JsonSchema.string())),
+          properties = Some(ChunkMap("name" -> JsonSchema.string())),
           additionalProperties = Some(JsonSchema.False)
         )
         assertTrue(
@@ -199,7 +200,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
     suite("Roundtrip")(
       test("toJson and fromJson roundtrip for simple schema") {
         val schema = JsonSchema.obj(
-          properties = Some(Map("name" -> JsonSchema.string(), "age" -> JsonSchema.integer())),
+          properties = Some(ChunkMap("name" -> JsonSchema.string(), "age" -> JsonSchema.integer())),
           required = Some(Set("name"))
         )
         val json      = schema.toJson
@@ -222,6 +223,84 @@ object JsonSchemaSpec extends SchemaBaseSpec {
           nullable.conforms(Json.Null),
           !nullable.conforms(Json.Number(42))
         )
+      },
+      test("withNullable on True returns True") {
+        assertTrue(JsonSchema.True.withNullable == JsonSchema.True)
+      },
+      test("withNullable on False returns Null schema") {
+        val result = JsonSchema.False.withNullable
+        assertTrue(result match {
+          case obj: JsonSchema.Object =>
+            obj.`type`.exists {
+              case SchemaType.Single(t) => t == JsonSchemaType.Null
+              case _                    => false
+            }
+          case _ => false
+        })
+      },
+      test("withNullable on schema already with Null type returns unchanged") {
+        val schema = JsonSchema.ofType(JsonSchemaType.Null)
+        assertTrue(schema.withNullable == schema)
+      },
+      test("withNullable on single non-null type adds Null to union") {
+        val schema = JsonSchema.ofType(JsonSchemaType.String)
+        val result = schema.withNullable
+        assertTrue(result match {
+          case obj: JsonSchema.Object =>
+            obj.`type`.exists {
+              case SchemaType.Union(ts) => ts.contains(JsonSchemaType.Null) && ts.contains(JsonSchemaType.String)
+              case _                    => false
+            }
+          case _ => false
+        })
+      },
+      test("withNullable on union already with Null returns unchanged") {
+        val schema =
+          JsonSchema.Object(`type` = Some(SchemaType.Union(new ::(JsonSchemaType.Null, JsonSchemaType.String :: Nil))))
+        assertTrue(schema.withNullable == schema)
+      },
+      test("withNullable on union without Null adds Null") {
+        val schema = JsonSchema.Object(`type` =
+          Some(SchemaType.Union(new ::(JsonSchemaType.String, JsonSchemaType.Integer :: Nil)))
+        )
+        val result = schema.withNullable
+        assertTrue(result match {
+          case obj: JsonSchema.Object =>
+            obj.`type`.exists {
+              case SchemaType.Union(ts) =>
+                ts.contains(JsonSchemaType.Null) &&
+                ts.contains(JsonSchemaType.String) &&
+                ts.contains(JsonSchemaType.Integer)
+              case _ => false
+            }
+          case _ => false
+        })
+      },
+      test("withNullable on schema with no type uses anyOf") {
+        val schema = JsonSchema.Object(minLength = Some(NonNegativeInt.one))
+        val result = schema.withNullable
+        assertTrue(result match {
+          case obj: JsonSchema.Object => obj.anyOf.isDefined
+          case _                      => false
+        })
+      }
+    ),
+    suite("FormatValidator via schema validation")(
+      test("uri-reference validation succeeds for valid reference") {
+        val schema = JsonSchema.string(format = Some("uri-reference"))
+        assertTrue(schema.conforms(Json.String("/path/to/resource"), ValidationOptions.formatAssertion))
+      },
+      test("uri-reference validation fails for invalid reference") {
+        val schema = JsonSchema.string(format = Some("uri-reference"))
+        assertTrue(!schema.conforms(Json.String("://invalid"), ValidationOptions.formatAssertion))
+      },
+      test("uri-reference validation with relative path") {
+        val schema = JsonSchema.string(format = Some("uri-reference"))
+        assertTrue(schema.conforms(Json.String("relative/path"), ValidationOptions.formatAssertion))
+      },
+      test("uri-reference validation with fragment") {
+        val schema = JsonSchema.string(format = Some("uri-reference"))
+        assertTrue(schema.conforms(Json.String("#fragment"), ValidationOptions.formatAssertion))
       }
     ),
     suite("Type unions")(
@@ -322,7 +401,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
       },
       test("dependentRequired constraint") {
         val schema = JsonSchema.Object(
-          dependentRequired = Some(Map("credit_card" -> Set("billing_address")))
+          dependentRequired = Some(ChunkMap("credit_card" -> Set("billing_address")))
         )
         assertTrue(
           schema.conforms(Json.Object("name" -> Json.String("Alice"))),
@@ -336,7 +415,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
     suite("Conditional validation")(
       test("if/then/else validation") {
         val schema = JsonSchema.Object(
-          `if` = Some(JsonSchema.obj(properties = Some(Map("country" -> JsonSchema.constOf(Json.String("USA")))))),
+          `if` = Some(JsonSchema.obj(properties = Some(ChunkMap("country" -> JsonSchema.constOf(Json.String("USA")))))),
           `then` = Some(JsonSchema.obj(required = Some(Set("postal_code")))),
           `else` = Some(JsonSchema.True)
         )
@@ -368,7 +447,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
     suite("Error accumulation")(
       test("multiple errors are accumulated") {
         val schema = JsonSchema.obj(
-          properties = Some(Map("name" -> JsonSchema.string(), "age" -> JsonSchema.integer())),
+          properties = Some(ChunkMap("name" -> JsonSchema.string(), "age" -> JsonSchema.integer())),
           required = Some(Set("name", "age"))
         )
         val result = schema.check(Json.Object())
@@ -382,11 +461,11 @@ object JsonSchemaSpec extends SchemaBaseSpec {
       test("complex schema roundtrip preserves structure") {
         val schema = JsonSchema.obj(
           properties = Some(
-            Map(
+            ChunkMap(
               "name"    -> JsonSchema.string(minLength = Some(NonNegativeInt.unsafe(1))),
               "age"     -> JsonSchema.integer(minimum = Some(BigDecimal(0))),
               "tags"    -> JsonSchema.array(items = Some(JsonSchema.string())),
-              "address" -> JsonSchema.obj(properties = Some(Map("city" -> JsonSchema.string())))
+              "address" -> JsonSchema.obj(properties = Some(ChunkMap("city" -> JsonSchema.string())))
             )
           ),
           required = Some(Set("name"))
@@ -455,7 +534,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
     suite("Schema.fromJsonSchema")(
       test("valid JSON passes validation") {
         val jsonSchema = JsonSchema.obj(
-          properties = Some(Map("name" -> JsonSchema.string())),
+          properties = Some(ChunkMap("name" -> JsonSchema.string())),
           required = Some(Set("name"))
         )
         val schemaForJson = Schema.fromJsonSchema(jsonSchema)
@@ -465,7 +544,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
       },
       test("invalid JSON fails validation") {
         val jsonSchema = JsonSchema.obj(
-          properties = Some(Map("name" -> JsonSchema.string())),
+          properties = Some(ChunkMap("name" -> JsonSchema.string())),
           required = Some(Set("name"))
         )
         val schemaForJson = Schema.fromJsonSchema(jsonSchema)
@@ -647,7 +726,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
       test("format validation propagates through nested schemas") {
         val schema = JsonSchema.obj(
           properties = Some(
-            Map(
+            ChunkMap(
               "email"    -> JsonSchema.string(format = Some("email")),
               "website"  -> JsonSchema.string(format = Some("uri")),
               "contacts" -> JsonSchema.array(items = Some(JsonSchema.string(format = Some("email"))))
@@ -690,7 +769,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
     suite("unevaluatedProperties")(
       test("rejects unevaluated properties when schema is False") {
         val schema = JsonSchema.obj(
-          properties = Some(Map("name" -> JsonSchema.string())),
+          properties = Some(ChunkMap("name" -> JsonSchema.string())),
           unevaluatedProperties = Some(JsonSchema.False)
         )
         assertTrue(
@@ -700,7 +779,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
       },
       test("validates unevaluated properties against schema") {
         val schema = JsonSchema.obj(
-          properties = Some(Map("name" -> JsonSchema.string())),
+          properties = Some(ChunkMap("name" -> JsonSchema.string())),
           unevaluatedProperties = Some(JsonSchema.integer())
         )
         assertTrue(
@@ -711,7 +790,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
       },
       test("properties evaluated by patternProperties are not unevaluated") {
         val schema = JsonSchema.obj(
-          patternProperties = Some(Map(RegexPattern.unsafe("^x_") -> JsonSchema.string())),
+          patternProperties = Some(ChunkMap(RegexPattern.unsafe("^x_") -> JsonSchema.string())),
           unevaluatedProperties = Some(JsonSchema.False)
         )
         assertTrue(
@@ -721,7 +800,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
       },
       test("properties evaluated by additionalProperties are not unevaluated") {
         val schema = JsonSchema.obj(
-          properties = Some(Map("name" -> JsonSchema.string())),
+          properties = Some(ChunkMap("name" -> JsonSchema.string())),
           additionalProperties = Some(JsonSchema.number()),
           unevaluatedProperties = Some(JsonSchema.False)
         )
@@ -734,8 +813,8 @@ object JsonSchemaSpec extends SchemaBaseSpec {
         val schema = JsonSchema.Object(
           allOf = Some(
             ::(
-              JsonSchema.obj(properties = Some(Map("foo" -> JsonSchema.string()))),
-              List(JsonSchema.obj(properties = Some(Map("bar" -> JsonSchema.integer()))))
+              JsonSchema.obj(properties = Some(ChunkMap("foo" -> JsonSchema.string()))),
+              List(JsonSchema.obj(properties = Some(ChunkMap("bar" -> JsonSchema.integer()))))
             )
           ),
           unevaluatedProperties = Some(JsonSchema.False)
@@ -749,8 +828,8 @@ object JsonSchemaSpec extends SchemaBaseSpec {
         val schema = JsonSchema.Object(
           anyOf = Some(
             ::(
-              JsonSchema.obj(properties = Some(Map("foo" -> JsonSchema.string()))),
-              List(JsonSchema.obj(properties = Some(Map("bar" -> JsonSchema.integer()))))
+              JsonSchema.obj(properties = Some(ChunkMap("foo" -> JsonSchema.string()))),
+              List(JsonSchema.obj(properties = Some(ChunkMap("bar" -> JsonSchema.integer()))))
             )
           ),
           unevaluatedProperties = Some(JsonSchema.False)
@@ -766,11 +845,11 @@ object JsonSchemaSpec extends SchemaBaseSpec {
           oneOf = Some(
             ::(
               JsonSchema.obj(properties =
-                Some(Map("type" -> JsonSchema.constOf(Json.String("a")), "a" -> JsonSchema.string()))
+                Some(ChunkMap("type" -> JsonSchema.constOf(Json.String("a")), "a" -> JsonSchema.string()))
               ),
               List(
                 JsonSchema.obj(properties =
-                  Some(Map("type" -> JsonSchema.constOf(Json.String("b")), "b" -> JsonSchema.integer()))
+                  Some(ChunkMap("type" -> JsonSchema.constOf(Json.String("b")), "b" -> JsonSchema.integer()))
                 )
               )
             )
@@ -787,9 +866,9 @@ object JsonSchemaSpec extends SchemaBaseSpec {
       },
       test("properties from if/then branch are evaluated") {
         val schema = JsonSchema.Object(
-          `if` = Some(JsonSchema.obj(properties = Some(Map("type" -> JsonSchema.constOf(Json.String("a")))))),
-          `then` = Some(JsonSchema.obj(properties = Some(Map("a" -> JsonSchema.string())))),
-          `else` = Some(JsonSchema.obj(properties = Some(Map("b" -> JsonSchema.integer())))),
+          `if` = Some(JsonSchema.obj(properties = Some(ChunkMap("type" -> JsonSchema.constOf(Json.String("a")))))),
+          `then` = Some(JsonSchema.obj(properties = Some(ChunkMap("a" -> JsonSchema.string())))),
+          `else` = Some(JsonSchema.obj(properties = Some(ChunkMap("b" -> JsonSchema.integer())))),
           unevaluatedProperties = Some(JsonSchema.False)
         )
         assertTrue(
@@ -802,7 +881,7 @@ object JsonSchemaSpec extends SchemaBaseSpec {
       },
       test("properties from $ref are evaluated") {
         val schema = JsonSchema.Object(
-          $defs = Some(Map("base" -> JsonSchema.obj(properties = Some(Map("foo" -> JsonSchema.string()))))),
+          $defs = Some(ChunkMap("base" -> JsonSchema.obj(properties = Some(ChunkMap("foo" -> JsonSchema.string()))))),
           $ref = Some(UriReference("#/$defs/base")),
           unevaluatedProperties = Some(JsonSchema.False)
         )

@@ -1,5 +1,6 @@
 package zio.blocks.schema.json
 
+import zio.blocks.chunk.ChunkMap
 import zio.blocks.schema.json._
 import zio.blocks.schema.json.JsonBinaryCodec._
 import zio.blocks.schema.binding.{Binding, BindingType, HasBinding, Registers, RegisterOffset}
@@ -9,7 +10,9 @@ import zio.blocks.schema.binding.RegisterOffset.RegisterOffset
 import zio.blocks.schema.binding.SeqDeconstructor.SpecializedIndexed
 import zio.blocks.schema.codec.BinaryFormat
 import zio.blocks.schema.derive.{BindingInstance, Deriver, InstanceOverride}
+import zio.blocks.typeid.{Owner, TypeId}
 import scala.annotation.{switch, tailrec}
+import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 
 /**
@@ -265,18 +268,18 @@ class JsonBinaryCodecDeriver private[json] (
 
   override def derivePrimitive[A](
     primitiveType: PrimitiveType[A],
-    typeName: TypeName[A],
+    typeId: TypeId[A],
     binding: Binding[BindingType.Primitive, A],
     doc: Doc,
     modifiers: Seq[Modifier.Reflect],
     defaultValue: Option[A],
     examples: Seq[A]
   ): Lazy[JsonBinaryCodec[A]] =
-    Lazy(deriveCodec(new Reflect.Primitive(primitiveType, typeName, binding, doc, modifiers)))
+    Lazy(deriveCodec(new Reflect.Primitive(primitiveType, typeId, binding, doc, modifiers)))
 
   override def deriveRecord[F[_, _], A](
     fields: IndexedSeq[Term[F, A, ?]],
-    typeName: TypeName[A],
+    typeId: TypeId[A],
     binding: Binding[BindingType.Record, A],
     doc: Doc,
     modifiers: Seq[Modifier.Reflect],
@@ -286,7 +289,7 @@ class JsonBinaryCodecDeriver private[json] (
     deriveCodec(
       new Reflect.Record(
         fields.asInstanceOf[IndexedSeq[Term[Binding, A, ?]]],
-        typeName,
+        typeId,
         binding,
         doc,
         modifiers
@@ -296,7 +299,7 @@ class JsonBinaryCodecDeriver private[json] (
 
   override def deriveVariant[F[_, _], A](
     cases: IndexedSeq[Term[F, A, ?]],
-    typeName: TypeName[A],
+    typeId: TypeId[A],
     binding: Binding[BindingType.Variant, A],
     doc: Doc,
     modifiers: Seq[Modifier.Reflect],
@@ -306,7 +309,7 @@ class JsonBinaryCodecDeriver private[json] (
     deriveCodec(
       new Reflect.Variant(
         cases.asInstanceOf[IndexedSeq[Term[Binding, A, ? <: A]]],
-        typeName,
+        typeId,
         binding,
         doc,
         modifiers
@@ -316,7 +319,7 @@ class JsonBinaryCodecDeriver private[json] (
 
   override def deriveSequence[F[_, _], C[_], A](
     element: Reflect[F, A],
-    typeName: TypeName[C[A]],
+    typeId: TypeId[C[A]],
     binding: Binding[BindingType.Seq[C], C[A]],
     doc: Doc,
     modifiers: Seq[Modifier.Reflect],
@@ -324,14 +327,14 @@ class JsonBinaryCodecDeriver private[json] (
     examples: Seq[C[A]]
   )(implicit F: HasBinding[F], D: HasInstance[F]): Lazy[JsonBinaryCodec[C[A]]] = Lazy {
     deriveCodec(
-      new Reflect.Sequence(element.asInstanceOf[Reflect[Binding, A]], typeName, binding, doc, modifiers)
+      new Reflect.Sequence(element.asInstanceOf[Reflect[Binding, A]], typeId, binding, doc, modifiers)
     )
   }
 
   override def deriveMap[F[_, _], M[_, _], K, V](
     key: Reflect[F, K],
     value: Reflect[F, V],
-    typeName: TypeName[M[K, V]],
+    typeId: TypeId[M[K, V]],
     binding: Binding[BindingType.Map[M], M[K, V]],
     doc: Doc,
     modifiers: Seq[Modifier.Reflect],
@@ -342,7 +345,7 @@ class JsonBinaryCodecDeriver private[json] (
       new Reflect.Map(
         key.asInstanceOf[Reflect[Binding, K]],
         value.asInstanceOf[Reflect[Binding, V]],
-        typeName,
+        typeId,
         binding,
         doc,
         modifiers
@@ -357,12 +360,11 @@ class JsonBinaryCodecDeriver private[json] (
     defaultValue: Option[DynamicValue],
     examples: Seq[DynamicValue]
   )(implicit F: HasBinding[F], D: HasInstance[F]): Lazy[JsonBinaryCodec[DynamicValue]] =
-    Lazy(deriveCodec(new Reflect.Dynamic(binding, TypeName.dynamicValue, doc, modifiers)))
+    Lazy(deriveCodec(new Reflect.Dynamic(binding, TypeId.of[DynamicValue], doc, modifiers)))
 
   def deriveWrapper[F[_, _], A, B](
     wrapped: Reflect[F, B],
-    typeName: TypeName[A],
-    wrapperPrimitiveType: Option[PrimitiveType[A]],
+    typeId: TypeId[A],
     binding: Binding[BindingType.Wrapper[A, B], A],
     doc: Doc,
     modifiers: Seq[Modifier.Reflect],
@@ -372,8 +374,7 @@ class JsonBinaryCodecDeriver private[json] (
     deriveCodec(
       new Reflect.Wrapper(
         wrapped.asInstanceOf[Reflect[Binding, B]],
-        typeName,
-        wrapperPrimitiveType,
+        typeId,
         binding,
         doc,
         modifiers
@@ -394,9 +395,11 @@ class JsonBinaryCodecDeriver private[json] (
   type Map[_, _]
   type TC[_]
 
-  private[this] val recursiveRecordCache = new ThreadLocal[java.util.HashMap[TypeName[?], Array[FieldInfo]]] {
-    override def initialValue: java.util.HashMap[TypeName[?], Array[FieldInfo]] = new java.util.HashMap
-  }
+  private[this] val recursiveRecordCache =
+    new ThreadLocal[java.util.HashMap[TypeId[?], Array[FieldInfo]]] {
+      override def initialValue: java.util.HashMap[TypeId[?], Array[FieldInfo]] =
+        new java.util.HashMap
+    }
   private[this] val discriminatorFields = new ThreadLocal[List[DiscriminatorFieldInfo]] {
     override def initialValue: List[DiscriminatorFieldInfo] = Nil
   }
@@ -470,7 +473,8 @@ class JsonBinaryCodecDeriver private[json] (
               override def toJsonSchema: JsonSchema = codec.toJsonSchema.withNullable
             }
           case _ =>
-            val discr = variant.variantBinding.asInstanceOf[Binding.Variant[A]].discriminator
+            val discr           = variant.variantBinding.asInstanceOf[Binding.Variant[A]].discriminator
+            val variantTypeName = variant.typeId.name
             if (isEnumeration(variant)) {
               val map = new StringMap[Constructor[?]](variant.cases.length)
 
@@ -516,10 +520,12 @@ class JsonBinaryCodecDeriver private[json] (
 
               val enumInfos = getInfos(variant)
 
+              val enumTypeName = variantTypeName
               new JsonBinaryCodec[A]() {
                 private[this] val root           = new EnumNodeInfo(discr, enumInfos)
                 private[this] val constructorMap = map
                 private[this] val enumNames      = collectEnumNames(enumInfos)
+                private[this] val typeName       = enumTypeName
 
                 def decodeValue(in: JsonReader, default: A): A = {
                   val valueLen    = in.readStringAsCharBuf()
@@ -532,7 +538,10 @@ class JsonBinaryCodecDeriver private[json] (
 
                 override def toJsonSchema: JsonSchema = enumNames match {
                   case head :: tail =>
-                    JsonSchema.Object(`enum` = Some(new ::(Json.String(head), tail.map(Json.String.apply))))
+                    JsonSchema.Object(
+                      `enum` = Some(new ::(Json.String(head), tail.map(Json.String.apply))),
+                      title = Some(typeName)
+                    )
                   case Nil => JsonSchema.string()
                 }
               }
@@ -573,10 +582,12 @@ class JsonBinaryCodecDeriver private[json] (
                     infos
                   }
 
+                  val fieldVariantTypeName = variantTypeName
                   new JsonBinaryCodec[A]() {
                     private[this] val root                   = new CaseNodeInfo(discr, getInfos(variant, Nil))
                     private[this] val caseMap                = map
                     private[this] val discriminatorFieldName = fieldName
+                    private[this] val typeName               = fieldVariantTypeName
 
                     def decodeValue(in: JsonReader, default: A): A = {
                       in.setMark()
@@ -604,7 +615,7 @@ class JsonBinaryCodecDeriver private[json] (
                     override def toJsonSchema: JsonSchema = {
                       val caseSchemas = collectCaseSchemas(root.caseInfos).toList
                       caseSchemas match {
-                        case head :: tail => JsonSchema.Object(oneOf = Some(new ::(head, tail)))
+                        case head :: tail => JsonSchema.Object(oneOf = Some(new ::(head, tail)), title = Some(typeName))
                         case Nil          => JsonSchema.True
                       }
                     }
@@ -638,9 +649,11 @@ class JsonBinaryCodecDeriver private[json] (
                     infos
                   }
 
+                  val noneVariantTypeName = variantTypeName
                   new JsonBinaryCodec[A]() {
                     private[this] val root           = new CaseNodeInfo(discr, getInfos(variant))
                     private[this] val caseLeafCodecs = codecs.result()
+                    private[this] val typeName       = noneVariantTypeName
 
                     def decodeValue(in: JsonReader, default: A): A = {
                       var idx = 0
@@ -665,7 +678,7 @@ class JsonBinaryCodecDeriver private[json] (
                     override def toJsonSchema: JsonSchema = {
                       val caseSchemas = caseLeafCodecs.map(_.toJsonSchema).toList
                       caseSchemas match {
-                        case head :: tail => JsonSchema.Object(oneOf = Some(new ::(head, tail)))
+                        case head :: tail => JsonSchema.Object(oneOf = Some(new ::(head, tail)), title = Some(typeName))
                         case Nil          => JsonSchema.True
                       }
                     }
@@ -703,9 +716,11 @@ class JsonBinaryCodecDeriver private[json] (
                     infos
                   }
 
+                  val keyVariantTypeName = variantTypeName
                   new JsonBinaryCodec[A]() {
-                    private[this] val root    = new CaseNodeInfo(discr, getInfos(variant, Nil))
-                    private[this] val caseMap = map
+                    private[this] val root     = new CaseNodeInfo(discr, getInfos(variant, Nil))
+                    private[this] val caseMap  = map
+                    private[this] val typeName = keyVariantTypeName
 
                     def decodeValue(in: JsonReader, default: A): A =
                       if (in.isNextToken('{')) {
@@ -740,7 +755,7 @@ class JsonBinaryCodecDeriver private[json] (
                     override def toJsonSchema: JsonSchema = {
                       val caseSchemas = collectCaseSchemas(root.caseInfos).toList
                       caseSchemas match {
-                        case head :: tail => JsonSchema.Object(oneOf = Some(new ::(head, tail)))
+                        case head :: tail => JsonSchema.Object(oneOf = Some(new ::(head, tail)), title = Some(typeName))
                         case Nil          => JsonSchema.True
                       }
                     }
@@ -753,7 +768,7 @@ class JsonBinaryCodecDeriver private[json] (
                           if (name ne null) {
                             Array(
                               JsonSchema.obj(
-                                properties = Some(Map(name -> innerSchema)),
+                                properties = Some(ChunkMap(name -> innerSchema)),
                                 required = Some(Set(name)),
                                 additionalProperties = Some(JsonSchema.False)
                               )
@@ -783,7 +798,7 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newIntBuilder()
+                      val builder = constructor.newBuilder[Int]()
                       var idx     = -1
                       try {
                         while ({
@@ -794,7 +809,7 @@ class JsonBinaryCodecDeriver private[json] (
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultInt(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -813,7 +828,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Int] = constructor.emptyInt
+                override def nullValue: Col[Int] = constructor.empty[Int]
               }
             } else {
               new JsonBinaryCodec[Col[Int]]() {
@@ -826,18 +841,18 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newIntBuilder()
+                      val builder = constructor.newBuilder[Int]()
                       var idx     = -1
                       try {
                         while ({
                           idx += 1
-                          constructor.addInt(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
+                          constructor.add(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
                           in.isNextToken(',')
                         }) ()
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultInt(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -856,7 +871,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Int] = constructor.emptyInt
+                override def nullValue: Col[Int] = constructor.empty[Int]
               }
             }
           case JsonBinaryCodec.longType if binding.deconstructor.isInstanceOf[SpecializedIndexed[Col]] =>
@@ -870,7 +885,7 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newLongBuilder()
+                      val builder = constructor.newBuilder[Long]()
                       var idx     = -1
                       try {
                         while ({
@@ -881,7 +896,7 @@ class JsonBinaryCodecDeriver private[json] (
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultLong(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -900,7 +915,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Long] = constructor.emptyLong
+                override def nullValue: Col[Long] = constructor.empty[Long]
               }
             } else {
               new JsonBinaryCodec[Col[Long]]() {
@@ -913,18 +928,18 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newLongBuilder()
+                      val builder = constructor.newBuilder[Long]()
                       var idx     = -1
                       try {
                         while ({
                           idx += 1
-                          constructor.addLong(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
+                          constructor.add(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
                           in.isNextToken(',')
                         }) ()
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultLong(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -943,7 +958,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Long] = constructor.emptyLong
+                override def nullValue: Col[Long] = constructor.empty[Long]
               }
             }
           case JsonBinaryCodec.floatType if binding.deconstructor.isInstanceOf[SpecializedIndexed[Col]] =>
@@ -957,7 +972,7 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newFloatBuilder()
+                      val builder = constructor.newBuilder[Float]()
                       var idx     = -1
                       try {
                         while ({
@@ -968,7 +983,7 @@ class JsonBinaryCodecDeriver private[json] (
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultFloat(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -987,7 +1002,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Float] = constructor.emptyFloat
+                override def nullValue: Col[Float] = constructor.empty[Float]
               }
             } else {
               new JsonBinaryCodec[Col[Float]]() {
@@ -1000,18 +1015,18 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newFloatBuilder()
+                      val builder = constructor.newBuilder[Float]()
                       var idx     = -1
                       try {
                         while ({
                           idx += 1
-                          constructor.addFloat(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
+                          constructor.add(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
                           in.isNextToken(',')
                         }) ()
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultFloat(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -1030,7 +1045,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Float] = constructor.emptyFloat
+                override def nullValue: Col[Float] = constructor.empty[Float]
               }
             }
           case JsonBinaryCodec.doubleType if binding.deconstructor.isInstanceOf[SpecializedIndexed[Col]] =>
@@ -1044,7 +1059,7 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newDoubleBuilder()
+                      val builder = constructor.newBuilder[Double]()
                       var idx     = -1
                       try {
                         while ({
@@ -1055,7 +1070,7 @@ class JsonBinaryCodecDeriver private[json] (
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultDouble(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -1074,7 +1089,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Double] = constructor.emptyDouble
+                override def nullValue: Col[Double] = constructor.empty[Double]
               }
             } else {
               new JsonBinaryCodec[Col[Double]]() {
@@ -1087,18 +1102,18 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newDoubleBuilder()
+                      val builder = constructor.newBuilder[Double]()
                       var idx     = -1
                       try {
                         while ({
                           idx += 1
-                          constructor.addDouble(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
+                          constructor.add(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
                           in.isNextToken(',')
                         }) ()
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultDouble(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -1117,7 +1132,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Double] = constructor.emptyDouble
+                override def nullValue: Col[Double] = constructor.empty[Double]
               }
             }
           case JsonBinaryCodec.booleanType if binding.deconstructor.isInstanceOf[SpecializedIndexed[Col]] =>
@@ -1131,7 +1146,7 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newBooleanBuilder()
+                      val builder = constructor.newBuilder[Boolean]()
                       var idx     = -1
                       try {
                         while ({
@@ -1142,7 +1157,7 @@ class JsonBinaryCodecDeriver private[json] (
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultBoolean(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -1161,7 +1176,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Boolean] = constructor.emptyBoolean
+                override def nullValue: Col[Boolean] = constructor.empty[Boolean]
               }
             } else {
               new JsonBinaryCodec[Col[Boolean]]() {
@@ -1174,18 +1189,18 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newBooleanBuilder()
+                      val builder = constructor.newBuilder[Boolean]()
                       var idx     = -1
                       try {
                         while ({
                           idx += 1
-                          constructor.addBoolean(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
+                          constructor.add(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
                           in.isNextToken(',')
                         }) ()
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultBoolean(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -1204,7 +1219,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Boolean] = constructor.emptyBoolean
+                override def nullValue: Col[Boolean] = constructor.empty[Boolean]
               }
             }
           case JsonBinaryCodec.byteType if binding.deconstructor.isInstanceOf[SpecializedIndexed[Col]] =>
@@ -1218,18 +1233,18 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newByteBuilder()
+                      val builder = constructor.newBuilder[Byte]()
                       var idx     = -1
                       try {
                         while ({
                           idx += 1
-                          constructor.addByte(builder, in.readByte())
+                          constructor.add(builder, in.readByte())
                           in.isNextToken(',')
                         }) ()
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultByte(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -1248,7 +1263,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Byte] = constructor.emptyByte
+                override def nullValue: Col[Byte] = constructor.empty[Byte]
               }
             } else {
               new JsonBinaryCodec[Col[Byte]]() {
@@ -1261,18 +1276,18 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newByteBuilder()
+                      val builder = constructor.newBuilder[Byte]()
                       var idx     = -1
                       try {
                         while ({
                           idx += 1
-                          constructor.addByte(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
+                          constructor.add(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
                           in.isNextToken(',')
                         }) ()
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultByte(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -1291,7 +1306,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Byte] = constructor.emptyByte
+                override def nullValue: Col[Byte] = constructor.empty[Byte]
               }
             }
           case JsonBinaryCodec.charType if binding.deconstructor.isInstanceOf[SpecializedIndexed[Col]] =>
@@ -1305,18 +1320,18 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newCharBuilder()
+                      val builder = constructor.newBuilder[Char]()
                       var idx     = -1
                       try {
                         while ({
                           idx += 1
-                          constructor.addChar(builder, in.readChar())
+                          constructor.add(builder, in.readChar())
                           in.isNextToken(',')
                         }) ()
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultChar(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -1335,7 +1350,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Char] = constructor.emptyChar
+                override def nullValue: Col[Char] = constructor.empty[Char]
               }
             } else {
               new JsonBinaryCodec[Col[Char]]() {
@@ -1348,18 +1363,18 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newCharBuilder()
+                      val builder = constructor.newBuilder[Char]()
                       var idx     = -1
                       try {
                         while ({
                           idx += 1
-                          constructor.addChar(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
+                          constructor.add(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
                           in.isNextToken(',')
                         }) ()
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultChar(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -1378,7 +1393,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Char] = constructor.emptyChar
+                override def nullValue: Col[Char] = constructor.empty[Char]
               }
             }
           case JsonBinaryCodec.shortType if binding.deconstructor.isInstanceOf[SpecializedIndexed[Col]] =>
@@ -1392,18 +1407,18 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newShortBuilder()
+                      val builder = constructor.newBuilder[Short]()
                       var idx     = -1
                       try {
                         while ({
                           idx += 1
-                          constructor.addShort(builder, in.readShort())
+                          constructor.add(builder, in.readShort())
                           in.isNextToken(',')
                         }) ()
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultShort(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -1422,7 +1437,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Short] = constructor.emptyShort
+                override def nullValue: Col[Short] = constructor.empty[Short]
               }
             } else {
               new JsonBinaryCodec[Col[Short]]() {
@@ -1435,18 +1450,18 @@ class JsonBinaryCodecDeriver private[json] (
                     if (in.isNextToken(']')) default
                     else {
                       in.rollbackToken()
-                      val builder = constructor.newShortBuilder()
+                      val builder = constructor.newBuilder[Short]()
                       var idx     = -1
                       try {
                         while ({
                           idx += 1
-                          constructor.addShort(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
+                          constructor.add(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
                           in.isNextToken(',')
                         }) ()
                       } catch {
                         case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                       }
-                      if (in.isCurrentToken(']')) constructor.resultShort(builder)
+                      if (in.isCurrentToken(']')) constructor.result(builder)
                       else in.arrayEndOrCommaError()
                     }
                   } else {
@@ -1465,7 +1480,7 @@ class JsonBinaryCodecDeriver private[json] (
                   out.writeArrayEnd()
                 }
 
-                override def nullValue: Col[Short] = constructor.emptyShort
+                override def nullValue: Col[Short] = constructor.empty[Short]
               }
             }
           case _ =>
@@ -1474,23 +1489,25 @@ class JsonBinaryCodecDeriver private[json] (
               private[this] val constructor   = binding.constructor
               private[this] val elementCodec  = codec
 
+              private[this] val elemClassTag = sequence.elemClassTag.asInstanceOf[ClassTag[Elem]]
+
               def decodeValue(in: JsonReader, default: Col[Elem]): Col[Elem] =
                 if (in.isNextToken('[')) {
                   if (in.isNextToken(']')) default
                   else {
                     in.rollbackToken()
-                    val builder = constructor.newObjectBuilder[Elem](8)
+                    val builder = constructor.newBuilder[Elem](8)(elemClassTag)
                     var idx     = -1
                     try {
                       while ({
                         idx += 1
-                        constructor.addObject(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
+                        constructor.add(builder, elementCodec.decodeValue(in, elementCodec.nullValue))
                         in.isNextToken(',')
                       }) ()
                     } catch {
                       case error if NonFatal(error) => in.decodeError(new DynamicOptic.Node.AtIndex(idx), error)
                     }
-                    if (in.isCurrentToken(']')) constructor.resultObject[Elem](builder)
+                    if (in.isCurrentToken(']')) constructor.result[Elem](builder)
                     else in.arrayEndOrCommaError()
                   }
                 } else {
@@ -1505,7 +1522,7 @@ class JsonBinaryCodecDeriver private[json] (
                 out.writeArrayEnd()
               }
 
-              override def nullValue: Col[Elem] = constructor.emptyObject[Elem]
+              override def nullValue: Col[Elem] = constructor.empty[Elem](elemClassTag)
 
               override def toJsonSchema: JsonSchema = JsonSchema.array(items = Some(elementCodec.toJsonSchema))
             }
@@ -1774,9 +1791,9 @@ class JsonBinaryCodecDeriver private[json] (
           }
         } else {
           val isRecursive = fields.exists(_.value.isInstanceOf[Reflect.Deferred[F, ?]])
-          val typeName    = record.typeName
+          val typeId      = record.typeId
           var infos       =
-            if (isRecursive) recursiveRecordCache.get.get(typeName)
+            if (isRecursive) recursiveRecordCache.get.get(typeId)
             else null
           val deriveCodecs = infos eq null
           if (deriveCodecs) {
@@ -1794,7 +1811,7 @@ class JsonBinaryCodecDeriver private[json] (
               )
               idx += 1
             }
-            if (isRecursive) recursiveRecordCache.get.put(typeName, infos)
+            if (isRecursive) recursiveRecordCache.get.put(typeId, infos)
             discriminatorFields.set(null :: discriminatorFields.get)
           }
           var offset = 0L
@@ -1822,6 +1839,7 @@ class JsonBinaryCodecDeriver private[json] (
             idx += 1
           }
           if (deriveCodecs) discriminatorFields.set(discriminatorFields.get.tail)
+          val typeName = typeId.name
           new JsonBinaryCodec[A]() {
             private[this] val deconstructor       = binding.deconstructor
             private[this] val constructor         = binding.constructor
@@ -1833,6 +1851,7 @@ class JsonBinaryCodecDeriver private[json] (
             private[this] val skipEmptyCollection = transientEmptyCollection
             private[this] val skipDefaultValue    = transientDefaultValue
             private[this] val doReject            = rejectExtraFields
+            private[this] val recordTypeName      = typeName
 
             require(fieldInfos.length <= 128, "expected up to 128 fields")
 
@@ -1936,10 +1955,11 @@ class JsonBinaryCodecDeriver private[json] (
               } else in.skip()
 
             override def toJsonSchema: JsonSchema = {
-              val properties = fieldInfos.iterator
-                .filter(_.nonTransient)
-                .map(fi => (fi.getName, fi.getCodec.toJsonSchema))
-                .toMap
+              val properties = ChunkMap.from(
+                fieldInfos.iterator
+                  .filter(_.nonTransient)
+                  .map(fi => (fi.getName, fi.getCodec.toJsonSchema))
+              )
               val requiredFields = fieldInfos.iterator
                 .filter(fi => fi.nonTransient && !fi.isOptional && !fi.isCollection && !fi.hasDefault)
                 .map(_.getName)
@@ -1947,7 +1967,8 @@ class JsonBinaryCodecDeriver private[json] (
               JsonSchema.obj(
                 properties = Some(properties),
                 required = if (requiredFields.nonEmpty) Some(requiredFields) else None,
-                additionalProperties = if (doReject) Some(JsonSchema.False) else None
+                additionalProperties = if (doReject) Some(JsonSchema.False) else None,
+                title = Some(recordTypeName)
               )
             }
           }
@@ -1958,7 +1979,7 @@ class JsonBinaryCodecDeriver private[json] (
       if (wrapper.wrapperBinding.isInstanceOf[Binding[?, ?]]) {
         val binding = wrapper.wrapperBinding.asInstanceOf[Binding.Wrapper[A, Wrapped]]
         val codec   = deriveCodec(wrapper.wrapped).asInstanceOf[JsonBinaryCodec[Wrapped]]
-        new JsonBinaryCodec[A](wrapper.wrapperPrimitiveType.fold(JsonBinaryCodec.objectType) {
+        new JsonBinaryCodec[A](wrapper.underlyingPrimitiveType.fold(JsonBinaryCodec.objectType) {
           case _: PrimitiveType.Boolean   => JsonBinaryCodec.booleanType
           case _: PrimitiveType.Byte      => JsonBinaryCodec.byteType
           case _: PrimitiveType.Char      => JsonBinaryCodec.charType
@@ -1975,36 +1996,37 @@ class JsonBinaryCodecDeriver private[json] (
           private[this] val wrappedCodec = codec
 
           override def decodeValue(in: JsonReader, default: A): A =
-            wrap(
-              try {
+            try
+              wrap(
                 wrappedCodec.decodeValue(
                   in, {
                     if (default == null) null
                     else unwrap(default)
                   }.asInstanceOf[Wrapped]
                 )
-              } catch {
-                case error if NonFatal(error) => in.decodeError(DynamicOptic.Node.Wrapped, error)
-              }
-            ) match {
-              case Right(x)    => x
-              case Left(error) => in.decodeError(error.message)
+              )
+            catch {
+              case error if NonFatal(error) => in.decodeError(DynamicOptic.Node.Wrapped, error)
             }
 
-          override def encodeValue(x: A, out: JsonWriter): Unit = wrappedCodec.encodeValue(unwrap(x), out)
+          override def encodeValue(x: A, out: JsonWriter): Unit =
+            try wrappedCodec.encodeValue(unwrap(x), out)
+            catch {
+              case error if NonFatal(error) => out.encodeError(error.getMessage)
+            }
 
           override def decodeKey(in: JsonReader): A =
-            wrap(
-              try wrappedCodec.decodeKey(in)
-              catch {
-                case error if NonFatal(error) => in.decodeError(DynamicOptic.Node.Wrapped, error)
-              }
-            ) match {
-              case Right(x)    => x
-              case Left(error) => in.decodeError(error.message)
+            try
+              wrap(wrappedCodec.decodeKey(in))
+            catch {
+              case error if NonFatal(error) => in.decodeError(DynamicOptic.Node.Wrapped, error)
             }
 
-          override def encodeKey(x: A, out: JsonWriter): Unit = wrappedCodec.encodeKey(unwrap(x), out)
+          override def encodeKey(x: A, out: JsonWriter): Unit =
+            try wrappedCodec.encodeKey(unwrap(x), out)
+            catch {
+              case error if NonFatal(error) => out.encodeError(error.getMessage)
+            }
 
           override def toJsonSchema: JsonSchema = wrappedCodec.toJsonSchema
         }
@@ -2030,17 +2052,23 @@ class JsonBinaryCodecDeriver private[json] (
     }
 
   private[this] def option[F[_, _], A](variant: Reflect.Variant[F, A]): Option[Reflect[F, ?]] = {
-    val typeName = variant.typeName
-    val cases    = variant.cases
+    val typeId = variant.typeId
+    val cases  = variant.cases
     if (
-      typeName.namespace == Namespace.scala && typeName.name == "Option" &&
+      typeId.owner == Owner.fromPackagePath("scala") && typeId.name == "Option" &&
       cases.length == 2 && cases(1).name == "Some"
     ) cases(1).value.asRecord.map(_.fields(0).value)
     else None
   }
 
   private[this] def isOptional[F[_, _], A](reflect: Reflect[F, A]): Boolean =
-    !requireOptionFields && reflect.isOption
+    !requireOptionFields && reflect.isVariant && {
+      val variant = reflect.asVariant.get
+      val typeId  = reflect.typeId
+      val cases   = variant.cases
+      typeId.owner == Owner.fromPackagePath("scala") && typeId.name == "Option" &&
+      cases.length == 2 && cases(1).name == "Some"
+    }
 
   private[this] def isCollection[F[_, _], A](reflect: Reflect[F, A]): Boolean =
     !requireCollectionFields && reflect.isCollection
@@ -2056,10 +2084,8 @@ class JsonBinaryCodecDeriver private[json] (
       .asInstanceOf[Binding.Variant[A]]
       .discriminator
 
-  private[this] def isTuple[F[_, _], A](reflect: Reflect[F, A]): Boolean = reflect.isRecord && {
-    val typeName = reflect.typeName
-    typeName.namespace == Namespace.scala && typeName.name.startsWith("Tuple")
-  }
+  private[this] def isTuple[F[_, _], A](reflect: Reflect[F, A]): Boolean =
+    reflect.isRecord && reflect.typeId.isTuple
 }
 
 private class FieldInfo(

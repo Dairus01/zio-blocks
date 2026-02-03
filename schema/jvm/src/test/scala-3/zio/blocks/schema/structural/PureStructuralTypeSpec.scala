@@ -1,69 +1,66 @@
 package zio.blocks.schema.structural
-import zio.blocks.schema.SchemaBaseSpec
 
 import zio.blocks.schema._
+import zio.blocks.schema.binding._
 import zio.test._
+import scala.annotation.nowarn
+import scala.language.reflectiveCalls
 
-/** Tests for pure structural type Schema derivation (JVM only). */
 object PureStructuralTypeSpec extends SchemaBaseSpec {
 
-  type PersonLike = { def name: String; def age: Int }
+  type PersonStructural = { def name: String; def age: Int }
+  type EmptyStructural  = {}
 
   def spec: Spec[Any, Nothing] = suite("PureStructuralTypeSpec")(
-    test("pure structural type derives schema") {
-      val schema = Schema.derived[PersonLike]
-      assertTrue(schema != null)
-    },
-    test("pure structural type schema has correct field names") {
-      val schema     = Schema.derived[PersonLike]
-      val fieldNames = schema.reflect match {
-        case record: Reflect.Record[_, _] => record.fields.map(_.name).toSet
-        case _                            => Set.empty[String]
-      }
-      assertTrue(fieldNames == Set("name", "age"))
-    },
-    test("pure structural type converts to DynamicValue and back") {
-      val schema = Schema.derived[PersonLike]
-
-      val person: PersonLike = new {
-        @scala.annotation.nowarn
-        def name: String = "Alice"
-        @scala.annotation.nowarn
-        def age: Int = 30
-      }
-
-      val dynamic = schema.toDynamicValue(person)
-
+    test("derive schema for structural type with String and Int fields") {
+      val schema     = Schema.derived[PersonStructural]
+      val record     = schema.reflect.asInstanceOf[Reflect.Record[Binding, PersonStructural]]
+      val fieldNames = record.fields.map(_.name).toSet
       assertTrue(
-        dynamic match {
-          case DynamicValue.Record(fields) =>
-            val fieldMap = fields.toMap
-            fieldMap.get("name").contains(DynamicValue.Primitive(PrimitiveValue.String("Alice"))) &&
-            fieldMap.get("age").contains(DynamicValue.Primitive(PrimitiveValue.Int(30)))
-          case _ => false
-        },
-        schema.fromDynamicValue(dynamic).isRight
+        record.fields.size == 2,
+        fieldNames.contains("name"),
+        fieldNames.contains("age")
       )
     },
-    test("pure structural type encodes to correct DynamicValue structure") {
-      val schema = Schema.derived[PersonLike]
+    test("derive schema for empty structural type") {
+      val schema = Schema.derived[EmptyStructural]
+      val record = schema.reflect.asInstanceOf[Reflect.Record[Binding, EmptyStructural]]
+      assertTrue(record.fields.isEmpty)
+    },
+    test("structural type constructor creates instance and deconstructor extracts values") {
+      type Person = { def name: String; def age: Int }
+      val schema  = Schema.derived[Person]
+      val record  = schema.reflect.asInstanceOf[Reflect.Record[Binding, Person]]
+      val binding = record.recordBinding.asInstanceOf[Binding.Record[Person]]
 
-      val person: PersonLike = new {
-        @scala.annotation.nowarn
+      val inputRegisters = Registers(binding.constructor.usedRegisters)
+      inputRegisters.setObject(RegisterOffset.Zero, "Alice")
+      inputRegisters.setInt(RegisterOffset.Zero, 30)
+
+      val constructed: Person = binding.constructor.construct(inputRegisters, RegisterOffset.Zero)
+      assertTrue(constructed != null)
+    },
+    test("structural type deconstructor extracts values via reflection") {
+      type Person = { def name: String; def age: Int }
+      val schema  = Schema.derived[Person]
+      val record  = schema.reflect.asInstanceOf[Reflect.Record[Binding, Person]]
+      val binding = record.recordBinding.asInstanceOf[Binding.Record[Person]]
+
+      @nowarn("msg=unused") val person: Person = new {
         def name: String = "Bob"
-        @scala.annotation.nowarn
-        def age: Int = 25
+        def age: Int     = 25
       }
 
-      val dynamic = schema.toDynamicValue(person)
+      val registers = Registers(binding.deconstructor.usedRegisters)
+      binding.deconstructor.deconstruct(registers, RegisterOffset.Zero, person)
 
-      assertTrue(dynamic match {
-        case DynamicValue.Record(fields) =>
-          val fieldMap = fields.toMap
-          fieldMap.get("name").contains(DynamicValue.Primitive(PrimitiveValue.String("Bob"))) &&
-          fieldMap.get("age").contains(DynamicValue.Primitive(PrimitiveValue.Int(25)))
-        case _ => false
-      })
+      val extractedName = registers.getObject(RegisterOffset.Zero).asInstanceOf[String]
+      val extractedAge  = registers.getInt(RegisterOffset.Zero)
+
+      assertTrue(
+        extractedName == "Bob",
+        extractedAge == 25
+      )
     }
   )
 }

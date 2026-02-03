@@ -8,7 +8,15 @@ import zio.blocks.schema.{DynamicOptic, Schema, SchemaExpr}
  * `MigrationBuilder` provides a fluent API for composing migration actions while
  * maintaining type safety through the source and target schema types.
  *
- * Example:
+ * Example with macro selectors:
+ * {{{
+ * val migration = Migration.newBuilder[PersonV1, PersonV2]
+ *   .addField(_.age, SchemaExpr.Literal(30, Schema[Int]))
+ *   .renameField(_.name, _.fullName)
+ *   .build
+ * }}}
+ *
+ * Example with DynamicOptic (lower-level API):
  * {{{
  * val migration = Migration.newBuilder[PersonV1, PersonV2]
  *   .addField(DynamicOptic.empty.field("age"), SchemaExpr.Literal(30, Schema[Int]))
@@ -23,7 +31,7 @@ final class MigrationBuilder[A, B](
   sourceSchema: Schema[A],
   targetSchema: Schema[B],
   actions: Vector[MigrationAction]
-) {
+) extends MigrationBuilderMacros[A, B] {
 
   /**
    * Add a new field with a default value.

@@ -41,24 +41,4 @@ package object migration {
    * }}}
    */
   def structural[T](implicit ev: zio.blocks.schema.Schema[T]): zio.blocks.schema.Schema[T] = ev
-  
-  /**
-   * Type alias for convenience.
-   */
-  type MigrationError = zio.blocks.schema.migration.MigrationError
-  
-  /**
-   * Type alias for convenience.
-   */
-  type MigrationAction = zio.blocks.schema.migration.MigrationAction
-  
-  /**
-   * Companion object for MigrationError.
-   */
-  val MigrationError = zio.blocks.schema.migration.MigrationError
-  
-  /**
-   * Companion object for MigrationAction.
-   */
-  val MigrationAction = zio.blocks.schema.migration.MigrationAction
 }

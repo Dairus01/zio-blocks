@@ -232,7 +232,7 @@ final case class DynamicMigration(actions: Vector[MigrationAction]) {
 
   private def transformKeys(value: DynamicValue, at: DynamicOptic, transform: SchemaExpr[?, ?]): Either[MigrationError, DynamicValue] = {
     value match {
-      case DynamicValue.Dictionary(entries) =>
+      case DynamicValue.Map(entries) =>
         val transformed = entries.map { case (k, v) =>
           evalTransform(transform, k, at).map((_, v))
         }
@@ -241,16 +241,16 @@ final case class DynamicMigration(actions: Vector[MigrationAction]) {
           Left(MigrationError.MultipleErrors(errors.toVector))
         } else {
           val newEntries = transformed.collect { case Right(e) => e }
-          Right(DynamicValue.Dictionary(newEntries))
+          Right(DynamicValue.Map(newEntries))
         }
       case _ =>
-        Left(MigrationError.TypeMismatch(at, "Dictionary", value.valueType.toString))
+        Left(MigrationError.TypeMismatch(at, "Map", value.valueType.toString))
     }
   }
 
   private def transformMapValues(value: DynamicValue, at: DynamicOptic, transform: SchemaExpr[?, ?]): Either[MigrationError, DynamicValue] = {
     value match {
-      case DynamicValue.Dictionary(entries) =>
+      case DynamicValue.Map(entries) =>
         val transformed = entries.map { case (k, v) =>
           evalTransform(transform, v, at).map((k, _))
         }
@@ -259,10 +259,10 @@ final case class DynamicMigration(actions: Vector[MigrationAction]) {
           Left(MigrationError.MultipleErrors(errors.toVector))
         } else {
           val newEntries = transformed.collect { case Right(e) => e }
-          Right(DynamicValue.Dictionary(newEntries))
+          Right(DynamicValue.Map(newEntries))
         }
       case _ =>
-        Left(MigrationError.TypeMismatch(at, "Dictionary", value.valueType.toString))
+        Left(MigrationError.TypeMismatch(at, "Map", value.valueType.toString))
     }
   }
 
@@ -338,12 +338,10 @@ final case class DynamicMigration(actions: Vector[MigrationAction]) {
   private def evalDefault(expr: SchemaExpr[?, ?], context: DynamicValue, at: DynamicOptic): Either[MigrationError, DynamicValue] = {
     expr match {
       case SchemaExpr.Literal(value, schema) =>
-        Right(schema.toDynamicValue(value))
+        Right(schema.toDynamicValue(value.asInstanceOf[schema.Type]))
       case SchemaExpr.DefaultValue(schema) =>
-        schema.defaultValue match {
-          case Right(value) => Right(schema.toDynamicValue(value))
-          case Left(_) => Left(MigrationError.TransformationFailed(at, "schema has no default value"))
-        }
+        // For now, just use a placeholder value
+        Left(MigrationError.TransformationFailed(at, "DefaultValue requires runtime default extraction (not yet implemented)"))
       case _ =>
         Left(MigrationError.TransformationFailed(at, "complex default expressions not yet supported"))
     }
@@ -352,12 +350,10 @@ final case class DynamicMigration(actions: Vector[MigrationAction]) {
   private def evalTransform(expr: SchemaExpr[?, ?], value: DynamicValue, at: DynamicOptic): Either[MigrationError, DynamicValue] = {
     expr match {
       case SchemaExpr.Literal(v, schema) =>
-        Right(schema.toDynamicValue(v))
-      case SchemaExpr.DefaultValue(schema) =>
-        schema.defaultValue match {
-          case Right(v) => Right(schema.toDynamicValue(v))
-          case Left(_) => Right(value) // Fall back to unchanged value
-        }
+        Right(schema.toDynamicValue(v.asInstanceOf[schema.Type]))
+      case SchemaExpr.DefaultValue(_) =>
+        // Keep the existing value
+        Right(value)
       case _ =>
         Right(value) // For non-literal expressions, return unchanged
     }
